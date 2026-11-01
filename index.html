@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notebook</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="description" content="A paper notebook for iPad: write, sketch, type, export to PDF.">
+<meta name="theme-color" content="#f6f1e7">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Notebook">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===== Home: list of notebooks ===== -->
+<section id="home" class="screen">
+  <header class="bar">
+    <h1>Notebooks</h1>
+    <div class="spacer"></div>
+    <button id="btnHelp" class="btn" title="Help">?</button>
+    <button id="btnImport" class="btn">Import</button>
+    <button id="btnNew" class="btn primary">+ New</button>
+  </header>
+  <div id="cards" class="cards"></div>
+  <p id="homeEmpty" class="empty" hidden>No notebooks yet.<br>Tap <b>+ New</b> to start one.</p>
+  <input type="file" id="fileImport" accept=".json,application/json" hidden>
+</section>
+
+<!-- ===== Editor ===== -->
+<section id="editor" class="screen" hidden>
+  <header class="bar">
+    <button id="btnHome" class="btn icon" title="All notebooks" aria-label="All notebooks">‹</button>
+    <button id="btnTitle" class="title" title="Rename"></button>
+    <div class="spacer"></div>
+    <div class="pagenav">
+      <button id="btnPrev" class="btn icon" title="Previous page">‹</button>
+      <button id="btnPageNo" class="btn pageno" title="Show pages">1 / 1</button>
+      <button id="btnNext" class="btn icon" title="Next page">›</button>
+      <button id="btnAddPage" class="btn icon" title="Add page after this one">+</button>
+    </div>
+    <button id="btnUndo" class="btn icon" title="Undo" aria-label="Undo">↶</button>
+    <button id="btnRedo" class="btn icon" title="Redo" aria-label="Redo">↷</button>
+    <button id="btnMenu" class="btn icon" title="Menu" aria-label="Menu">⋯</button>
+  </header>
+
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <textarea id="textEdit" hidden spellcheck="true" autocapitalize="sentences"></textarea>
+    <div id="selBar" class="selbar" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+  </div>
+
+  <aside id="pageStrip" hidden>
+    <div class="striphead"><span>Pages</span><button id="btnStripClose" class="btn icon">×</button></div>
+    <div id="thumbs"></div>
+  </aside>
+
+  <footer id="tools">
+    <div class="row toolsrow">
+      <button class="tool" data-tool="select" title="Select / lasso">
+        <svg viewBox="0 0 24 24"><path d="M4 4l7 16 2.5-6.5L20 11z"/></svg><span>Select</span></button>
+      <button class="tool" data-tool="pen" title="Pen">
+        <svg viewBox="0 0 24 24"><path d="M4 20l4-1L19.5 7.5a2 2 0 0 0-3-3L5 16z"/><path d="M14 6l4 4"/></svg><span>Pen</span></button>
+      <button class="tool" data-tool="highlighter" title="Highlighter">
+        <svg viewBox="0 0 24 24"><path d="M9 11l-5 5 3 3 5-5"/><path d="M9 11l7-7 4 4-7 7z"/><path d="M3 21h6"/></svg><span>Highlight</span></button>
+      <button class="tool" data-tool="eraser" title="Eraser (removes whole strokes)">
+        <svg viewBox="0 0 24 24"><path d="M7 20h10"/><path d="M5.5 15.5l9-9a2 2 0 0 1 3 0l3 3a2 2 0 0 1 0 3l-6.5 6.5H9z"/></svg><span>Eraser</span></button>
+      <span class="sep"></span>
+      <button class="tool" data-tool="rect" title="Rectangle">
+        <svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1"/></svg><span>Box</span></button>
+      <button class="tool" data-tool="ellipse" title="Circle / oval">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8" ry="6.5"/></svg><span>Circle</span></button>
+      <button class="tool" data-tool="line" title="Line">
+        <svg viewBox="0 0 24 24"><path d="M5 19L19 5"/></svg><span>Line</span></button>
+      <button class="tool" data-tool="arrow" title="Arrow">
+        <svg viewBox="0 0 24 24"><path d="M5 19L19 5"/><path d="M11 5h8v8"/></svg><span>Arrow</span></button>
+      <span class="sep"></span>
+      <button class="tool" data-tool="text" title="Text box (type or write with the Pencil)">
+        <svg viewBox="0 0 24 24"><path d="M5 6h14"/><path d="M12 6v13"/><path d="M9 19h6"/></svg><span>Text</span></button>
+      <button class="tool act" id="btnImage" title="Insert a photo">
+        <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 3-3 4 4"/></svg><span>Photo</span></button>
+      <button class="tool act" id="btnLink" title="Insert a website link">
+        <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 1 0-5.5l2.5-2.5a4 4 0 0 1 5.5 5.5L17 12.5"/><path d="M14 10a4 4 0 0 1 0 5.5L11.5 18A4 4 0 0 1 6 12.5L7 11.5"/></svg><span>Link</span></button>
+    </div>
+    <div class="row optsrow">
+      <div id="colors" class="swatches"></div>
+      <label class="custom" title="Custom color"><input type="color" id="colorPick" value="#111827"><span></span></label>
+      <span class="sep"></span>
+      <div id="sizes" class="sizes">
+        <button data-size="s" title="Thin"><i style="width:4px;height:4px"></i></button>
+        <button data-size="m" title="Medium"><i style="width:7px;height:7px"></i></button>
+        <button data-size="l" title="Thick"><i style="width:11px;height:11px"></i></button>
+      </div>
+      <div class="spacer"></div>
+      <button id="btnPencilOnly" class="toggle" title="When on, only the Apple Pencil draws; fingers scroll and zoom.">
+        <span class="dot"></span><span class="lbl">Pencil only</span></button>
+      <button id="btnFit" class="btn small" title="Fit page to screen">Fit</button>
+    </div>
+  </footer>
+  <input type="file" id="fileImage" accept="image/*" hidden>
+</section>
+
+<!-- ===== Dialogs ===== -->
+<dialog id="dlgNew">
+  <form method="dialog">
+    <h2>New notebook</h2>
+    <label>Name<input id="newName" type="text" placeholder="e.g. Meeting notes" autocomplete="off"></label>
+    <div class="lbl">Paper</div>
+    <div id="newPaper" class="paperpick"></div>
+    <div class="lbl">Cover</div>
+    <div id="newCover" class="coverpick"></div>
+    <div class="actions"><button type="button" class="btn cancel">Cancel</button><button value="ok" class="btn primary" id="newOk">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgLink">
+  <form method="dialog">
+    <h2>Insert link</h2>
+    <label>Web address<input id="linkUrl" type="text" placeholder="example.com" inputmode="url" autocapitalize="off" autocorrect="off"></label>
+    <label>Title (optional)<input id="linkTitle" type="text" placeholder="What is this link?"></label>
+    <div class="actions"><button type="button" class="btn cancel">Cancel</button><button value="ok" class="btn primary">Insert</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgMenu" class="sheet">
+  <form method="dialog">
+    <h2 id="menuTitle">Notebook</h2>
+    <button value="pdf" class="menuitem">Export notebook as PDF…</button>
+    <button value="pdfpage" class="menuitem">Export this page as PDF…</button>
+    <button value="png" class="menuitem">Export this page as image…</button>
+    <p class="hint">Tip: in the share sheet choose <b>Google Drive</b> and save into your “Notebook” folder so Claude can read it.</p>
+    <hr>
+    <button value="paper" class="menuitem">Change paper for this page…</button>
+    <button value="deletepage" class="menuitem">Delete this page</button>
+    <button value="rename" class="menuitem">Rename notebook…</button>
+    <button value="backup" class="menuitem">Save backup file (.json)…</button>
+    <button value="deletenb" class="menuitem danger">Delete notebook…</button>
+    <hr>
+    <button value="help" class="menuitem">How to use</button>
+    <div class="actions"><button type="button" class="btn cancel">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgPaper">
+  <form method="dialog">
+    <h2>Paper for this page</h2>
+    <div id="paperPick" class="paperpick"></div>
+    <label class="check"><input type="checkbox" id="paperAll"> Apply to every page in this notebook</label>
+    <div class="actions"><button type="button" class="btn cancel">Cancel</button><button value="ok" class="btn primary">Apply</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlgHelp">
+  <form method="dialog">
+    <h2>How to use Notebook</h2>
+    <ul class="help">
+      <li><b>Write and draw</b> with the Apple Pencil using Pen or Highlighter. Press harder for a thicker line.</li>
+      <li><b>Pencil only</b> (bottom right) means fingers never draw: one finger scrolls, two fingers pinch to zoom. Turn it off to draw with a finger.</li>
+      <li><b>Eraser</b> removes whole strokes you touch.</li>
+      <li><b>Select</b>: tap something to select it, or draw a loop around several things. Drag to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
+      <li><b>Boxes, circles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable.</li>
+      <li><b>Text</b>: pick Text and tap the page. Type, or write in the box with the Pencil and the iPad turns it into typed text (Scribble). Double‑tap a text box later to edit it.</li>
+      <li><b>Photo</b> and <b>Link</b> insert in the middle of the view. Select a link and tap Open to visit it.</li>
+      <li><b>Pages</b>: use ‹ › at the top, + to add a page, or tap the page number to see all pages.</li>
+      <li><b>Export</b> from the ⋯ menu. Choose Google Drive in the share sheet to send a PDF to Claude.</li>
+      <li>Everything is saved on this device automatically and works with no internet. Add the app to your Home Screen from Safari’s Share menu.</li>
+    </ul>
+    <div class="actions"><button value="ok" class="btn primary">Got it</button></div>
+  </form>
+</dialog>
+
+<script src="jspdf.umd.min.js" defer></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

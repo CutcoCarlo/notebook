@@ -1,0 +1,15 @@
+{
+  "name": "Notebook",
+  "short_name": "Notebook",
+  "description": "A paper notebook for iPad: write, sketch, type, export to PDF.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e9e4da",
+  "theme_color": "#f6f1e7",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

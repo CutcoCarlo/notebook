@@ -1,0 +1,293 @@
+/* render.js — shared drawing code used by the editor (canvas), thumbnails and PDF export.
+   All geometry is in "page points": a page is US Letter, 612 x 792 pt, origin top-left. */
+import { getStroke } from './perfect-freehand.mjs';
+
+export const PAGE_W = 612, PAGE_H = 792;
+export const FONT = 'Helvetica, Arial, sans-serif';
+
+export const TEMPLATES = {
+  blank:       { name: 'Blank' },
+  ruled:       { name: 'College ruled' },
+  composition: { name: 'Composition (wide ruled)' },
+  grid:        { name: 'Grid' },
+  dots:        { name: 'Dot grid' },
+};
+
+export const PEN_SIZES = { s: 1.8, m: 3.2, l: 6 };
+export const HL_SIZES  = { s: 10,  m: 16,  l: 26 };
+export const SHAPE_WIDTHS = { s: 1.5, m: 2.5, l: 4.5 };
+export const TEXT_SIZES = { s: 12, m: 16, l: 24 };
+
+/* ---------- paper templates ---------- */
+export function templateMarks(t) {
+  const m = [];
+  const line = (x1, y1, x2, y2, color, width) => m.push({ k: 'line', x1, y1, x2, y2, color, width });
+  if (t === 'ruled' || t === 'composition') {
+    const gap = t === 'ruled' ? 20.25 : 24.75;           // 9/32" college, 11/32" wide
+    const color = t === 'ruled' ? '#a9c9e8' : '#8fb0d6';
+    for (let y = 90; y <= PAGE_H - 36; y += gap) line(0, y, PAGE_W, y, color, 0.75);
+    line(90, 0, 90, PAGE_H, '#f09a95', 1);                 // red margin
+  } else if (t === 'grid') {
+    for (let x = 18; x < PAGE_W; x += 18) line(x, 0, x, PAGE_H, '#c5dcf1', 0.5);
+    for (let y = 18; y < PAGE_H; y += 18) line(0, y, PAGE_W, y, '#c5dcf1', 0.5);
+  } else if (t === 'dots') {
+    for (let x = 18; x < PAGE_W; x += 18) for (let y = 18; y < PAGE_H; y += 18) m.push({ k: 'dot', x, y, r: 1.1, color: '#a3b6ca' });
+  }
+  return m;
+}
+
+export function drawMarks(ctx, marks) {
+  for (const k of marks) {
+    if (k.k === 'line') { ctx.strokeStyle = k.color; ctx.lineWidth = k.width; ctx.beginPath(); ctx.moveTo(k.x1, k.y1); ctx.lineTo(k.x2, k.y2); ctx.stroke(); }
+    else { ctx.fillStyle = k.color; ctx.beginPath(); ctx.arc(k.x, k.y, k.r, 0, Math.PI * 2); ctx.fill(); }
+  }
+}
+
+/* ---------- ink ---------- */
+export function strokeOpts(el, live) {
+  if (el.tool === 'highlighter') return { size: el.size, thinning: 0, smoothing: 0.6, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true }, end: { cap: true } };
+  return { size: el.size, thinning: 0.55, smoothing: 0.5, streamline: 0.45, simulatePressure: !!el.sim, last: !live };
+}
+
+/* Outline polygon -> path commands (quadratic curves through midpoints, like the perfect-freehand docs). */
+function outlineToCmds(pts) {
+  if (pts.length < 2) return [];
+  const cmds = [{ op: 'm', c: [pts[0][0], pts[0][1]] }];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    cmds.push({ op: 'q', c: [a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2] });
+  }
+  cmds.push({ op: 'h' });
+  return cmds;
+}
+export function strokeCommands(el, live = false) {
+  return outlineToCmds(getStroke(el.points, strokeOpts(el, live)));
+}
+export function cmdsToPath2D(cmds) {
+  const p = new Path2D();
+  for (const c of cmds) {
+    if (c.op === 'm') p.moveTo(c.c[0], c.c[1]);
+    else if (c.op === 'l') p.lineTo(c.c[0], c.c[1]);
+    else if (c.op === 'q') p.quadraticCurveTo(c.c[0], c.c[1], c.c[2], c.c[3]);
+    else p.closePath();
+  }
+  return p;
+}
+const pathCache = new WeakMap();   // keyed by el.points array; replaced arrays miss automatically
+export function strokePath(el) {
+  let p = pathCache.get(el.points);
+  if (!p) { p = cmdsToPath2D(strokeCommands(el)); pathCache.set(el.points, p); }
+  return p;
+}
+
+/* ---------- text layout ---------- */
+const mctx = document.createElement('canvas').getContext('2d');
+export const TEXT_PAD = 4;
+export function layoutText(el) {
+  mctx.font = `${el.size}px ${FONT}`;
+  const maxW = Math.max(10, el.w - TEXT_PAD * 2);
+  const lines = [];
+  for (const para of String(el.text || '').split('\n')) {
+    let cur = '';
+    for (const word of para.split(' ')) {
+      const test = cur ? cur + ' ' + word : word;
+      if (mctx.measureText(test).width <= maxW) { cur = test; continue; }
+      if (cur) lines.push(cur);
+      // word longer than the box: break by character
+      if (mctx.measureText(word).width > maxW) {
+        let piece = '';
+        for (const ch of word) {
+          if (mctx.measureText(piece + ch).width > maxW && piece) { lines.push(piece); piece = ch; } else piece += ch;
+        }
+        cur = piece;
+      } else cur = word;
+    }
+    lines.push(cur);
+  }
+  el._lines = lines;
+  el.h = Math.max(1, lines.length) * el.size * 1.3 + TEXT_PAD * 2;
+  return lines;
+}
+
+/* ---------- images ---------- */
+const imgCache = new Map();
+export function getImage(src, onReady) {
+  let e = imgCache.get(src);
+  if (!e) {
+    e = { img: new Image(), ok: false, cbs: [] };
+    e.img.onload = () => { e.ok = true; const cbs = e.cbs; e.cbs = []; cbs.forEach(cb => cb()); };
+    e.img.onerror = () => { e.ok = true; e.failed = true; const cbs = e.cbs; e.cbs = []; cbs.forEach(cb => cb()); };
+    e.img.src = src;
+    imgCache.set(src, e);
+  }
+  if (!e.ok && onReady) e.cbs.push(onReady);
+  return e.ok && !e.failed ? e.img : null;
+}
+export function imageReady(src) {
+  return new Promise(res => { const i = getImage(src, () => res(imgCache.get(src).img)); if (i) res(i); });
+}
+
+/* ---------- elements ---------- */
+export function arrowHead(el) { return 8 + (el.width || 2) * 2.5; }
+
+export function drawElement(ctx, el, env = {}) {
+  if (env.hideId && env.hideId === el.id) return;
+  switch (el.type) {
+    case 'stroke': {
+      if (el.points.length < 1) return;
+      ctx.save();
+      if (el.tool === 'highlighter') { ctx.globalAlpha = 0.4; ctx.globalCompositeOperation = 'multiply'; }
+      ctx.fillStyle = el.color;
+      ctx.fill(env.live ? cmdsToPath2D(strokeCommands(el, true)) : strokePath(el));
+      ctx.restore();
+      break;
+    }
+    case 'shape': {
+      ctx.save();
+      ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
+      ctx.strokeStyle = el.color; ctx.lineWidth = el.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const hw = el.w / 2, hh = el.h / 2;
+      if (el.kind === 'rect') {
+        ctx.beginPath(); ctx.rect(-hw, -hh, el.w, el.h);
+        if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
+        ctx.stroke();
+      } else if (el.kind === 'ellipse') {
+        ctx.beginPath(); ctx.ellipse(0, 0, Math.max(0.1, hw), Math.max(0.1, hh), 0, 0, Math.PI * 2);
+        if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
+        ctx.stroke();
+      } else {
+        const hs = el.kind === 'arrow' ? arrowHead(el) : 0;
+        ctx.beginPath(); ctx.moveTo(-hw, 0); ctx.lineTo(hw - hs * 0.6, 0); ctx.stroke();
+        if (hs) { ctx.fillStyle = el.color; ctx.beginPath(); ctx.moveTo(hw, 0); ctx.lineTo(hw - hs, -hs * 0.45); ctx.lineTo(hw - hs, hs * 0.45); ctx.closePath(); ctx.fill(); }
+      }
+      ctx.restore();
+      break;
+    }
+    case 'text': {
+      const lines = el._lines || layoutText(el);
+      ctx.save();
+      ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
+      ctx.font = `${el.size}px ${FONT}`; ctx.fillStyle = el.color; ctx.textBaseline = 'top';
+      const lh = el.size * 1.3;
+      lines.forEach((ln, i) => ctx.fillText(ln, -el.w / 2 + TEXT_PAD, -el.h / 2 + TEXT_PAD + i * lh));
+      ctx.restore();
+      break;
+    }
+    case 'image': {
+      const img = getImage(el.src, env.onImage);
+      ctx.save();
+      ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
+      if (img) ctx.drawImage(img, -el.w / 2, -el.h / 2, el.w, el.h);
+      else { ctx.fillStyle = '#eef1f5'; ctx.fillRect(-el.w / 2, -el.h / 2, el.w, el.h); }
+      ctx.restore();
+      break;
+    }
+    case 'link': {
+      ctx.save();
+      ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
+      const x = -el.w / 2, y = -el.h / 2, r = 8;
+      ctx.beginPath(); ctx.roundRect(x, y, el.w, el.h, r);
+      ctx.fillStyle = '#eef4ff'; ctx.fill(); ctx.strokeStyle = '#7aa2e8'; ctx.lineWidth = 1; ctx.stroke();
+      // globe-ish icon
+      ctx.strokeStyle = '#3b6fd1'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x + 20, 0, 9, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(x + 20, 0, 4, 9, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 11, 0); ctx.lineTo(x + 29, 0); ctx.stroke();
+      ctx.save(); ctx.beginPath(); ctx.rect(x + 36, y, el.w - 42, el.h); ctx.clip();
+      ctx.fillStyle = '#1b2a4a'; ctx.textBaseline = 'top'; ctx.font = `bold 12px ${FONT}`;
+      ctx.fillText(el.title || hostOf(el.url), x + 36, y + 8);
+      ctx.fillStyle = '#5b6b85'; ctx.font = `10px ${FONT}`;
+      ctx.fillText(el.url, x + 36, y + 26);
+      ctx.restore();
+      ctx.restore();
+      break;
+    }
+  }
+}
+export function hostOf(url) { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } }
+
+export function renderPage(ctx, page, env = {}) {
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, PAGE_W, PAGE_H);
+  drawMarks(ctx, templateMarks(page.template));
+  for (const el of page.elements) drawElement(ctx, el, env);
+}
+
+/* ---------- geometry ---------- */
+export function corners(el) {
+  const c = Math.cos(el.rot || 0), s = Math.sin(el.rot || 0), hw = el.w / 2, hh = (el.h || 0) / 2;
+  return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([x, y]) => [el.cx + x * c - y * s, el.cy + x * s + y * c]);
+}
+export function toLocal(el, p) {
+  const dx = p[0] - el.cx, dy = p[1] - el.cy, c = Math.cos(-(el.rot || 0)), s = Math.sin(-(el.rot || 0));
+  return [dx * c - dy * s, dx * s + dy * c];
+}
+export function fromLocal(el, [x, y]) {
+  const c = Math.cos(el.rot || 0), s = Math.sin(el.rot || 0);
+  return [el.cx + x * c - y * s, el.cy + x * s + y * c];
+}
+export function bbox(el) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, pad = 0;
+  if (el.type === 'stroke') {
+    for (const p of el.points) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+    pad = el.size / 2 + 1;
+  } else {
+    for (const p of corners(el)) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+    if (el.type === 'shape') pad = el.width / 2 + (el.kind === 'arrow' ? arrowHead(el) * 0.5 : 0);
+  }
+  return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
+}
+export function unionBox(els) {
+  const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  for (const el of els) { const e = bbox(el); b.x0 = Math.min(b.x0, e.x0); b.y0 = Math.min(b.y0, e.y0); b.x1 = Math.max(b.x1, e.x1); b.y1 = Math.max(b.y1, e.y1); }
+  return b;
+}
+export function distToSegment(p, a, b) {
+  const vx = b[0] - a[0], vy = b[1] - a[1], wx = p[0] - a[0], wy = p[1] - a[1];
+  const len2 = vx * vx + vy * vy;
+  const t = len2 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2)) : 0;
+  const dx = a[0] + t * vx - p[0], dy = a[1] + t * vy - p[1];
+  return Math.hypot(dx, dy);
+}
+export function hitElement(el, p, tol) {
+  const b = bbox(el);
+  if (p[0] < b.x0 - tol || p[0] > b.x1 + tol || p[1] < b.y0 - tol || p[1] > b.y1 + tol) return false;
+  if (el.type === 'stroke') {
+    const r = tol + el.size / 2;
+    const pts = el.points;
+    if (pts.length === 1) return Math.hypot(pts[0][0] - p[0], pts[0][1] - p[1]) <= r;
+    for (let i = 1; i < pts.length; i++) if (distToSegment(p, pts[i - 1], pts[i]) <= r) return true;
+    return false;
+  }
+  const [lx, ly] = toLocal(el, p), hw = el.w / 2, hh = el.h / 2;
+  if (el.type === 'shape') {
+    const t = tol + el.width / 2;
+    if (el.kind === 'line' || el.kind === 'arrow') return Math.abs(ly) <= t + (el.kind === 'arrow' ? arrowHead(el) * 0.3 : 0) && lx >= -hw - t && lx <= hw + t;
+    const filled = el.fill && el.fill !== 'none';
+    if (el.kind === 'rect') {
+      const inside = Math.abs(lx) <= hw + t && Math.abs(ly) <= hh + t;
+      if (!inside) return false;
+      return filled || !(Math.abs(lx) < hw - t && Math.abs(ly) < hh - t);
+    }
+    const nx = lx / Math.max(hw, 0.1), ny = ly / Math.max(hh, 0.1), r = Math.hypot(nx, ny);
+    if (filled) return r <= 1 + t / Math.min(hw, hh);
+    return Math.abs(r - 1) * Math.min(hw, hh) <= t;
+  }
+  return Math.abs(lx) <= hw + tol && Math.abs(ly) <= hh + tol;
+}
+export function pointInPolygon(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > p[1]) !== (yj > p[1])) && (p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+export function elementInLasso(el, poly) {
+  if (el.type === 'stroke') {
+    let n = 0; const step = Math.max(1, Math.floor(el.points.length / 40));
+    let total = 0;
+    for (let i = 0; i < el.points.length; i += step) { total++; if (pointInPolygon(el.points[i], poly)) n++; }
+    return total > 0 && n / total >= 0.5;
+  }
+  return pointInPolygon([el.cx, el.cy], poly);
+}
