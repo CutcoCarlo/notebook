@@ -260,6 +260,12 @@ const pointers = new Map();
 let lastPenTime = -1e9;   // last time the Apple Pencil touched or hovered: hand contacts near that moment are ignored
 const PEN_GRACE_MS = 600;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+/* iPad Safari runs its own double-tap-zoom / text-selection / loupe gesture detectors on raw touches, and a Pencil
+   touch that arrives quickly after the previous stroke gets held by them and never reaches us as a pointerdown.
+   Claiming every raw touch on the canvas (non-passive, preventDefault) switches those detectors off. Our own
+   pointer-event handling is unaffected: pointer events are dispatched before the touch events. */
+for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) canvas.addEventListener(type, e => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+stage.addEventListener('touchstart', e => { if (e.cancelable && e.target === canvas) e.preventDefault(); }, { passive: false });
 canvas.addEventListener('pointerdown', onDown);
 canvas.addEventListener('pointermove', onMove);
 canvas.addEventListener('pointerup', onUp);
