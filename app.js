@@ -226,7 +226,11 @@ async function saveNow() {
   S.nb.updated = Date.now();
   const nb = snapshotNotebook();
   try {
-    if (S.thumbDirty || !S.thumb) { S.thumb = thumbnail(S.nb.pages[0], 160); S.thumbDirty = false; }
+    if (S.thumbDirty || !S.thumb) {
+      for (const el of S.nb.pages[0].elements) if (el.type === 'image') await R.imageReady(el.src);   // photos must be loaded or the thumbnail shows gaps
+      if (!S.nb) return;
+      S.thumb = thumbnail(S.nb.pages[0], 160); S.thumbDirty = false;
+    }
     await DB.put('notebooks', nb);
     await DB.put('meta', { id: nb.id, name: nb.name, updated: nb.updated, created: nb.created, pages: nb.pages.length, template: nb.template, cover: nb.cover, thumb: S.thumb });
   } catch (e) { console.error(e); toast('Could not save: ' + e.message); }
@@ -332,8 +336,11 @@ function selectDown(e, p) {
     const now = performance.now();
     if (hit.type === 'text' && lastTap && lastTap.el === hit && now - lastTap.t < 450) { lastTap = null; setSel([hit]); startEdit(hit); return; }
     lastTap = { el: hit, t: now };
-    if (!S.sel.includes(hit)) setSel([hit]);
-    gesture = { kind: 'move', pointerId: e.pointerId, start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), moved: false };
+    if (S.sel.includes(hit)) {
+      gesture = { kind: 'move', pointerId: e.pointerId, start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), moved: false };
+    } else {
+      setSel([hit]); gesture = { kind: 'tap', pointerId: e.pointerId };   // first tap only selects
+    }
   } else {
     setSel([]); gesture = { kind: 'lasso', pointerId: e.pointerId, pts: [p] };
   }
@@ -650,25 +657,103 @@ function addPage() {
   S.nb.pages.splice(S.pi + 1, 0, newPage(page().template));
   goPage(S.pi + 1); saveSoon(); toast(`Page ${S.pi + 1} added`);
 }
-function deletePage() {
-  if (S.nb.pages.length <= 1) { toast('A notebook needs at least one page.'); return; }
-  if (!confirm(`Delete page ${S.pi + 1}? This cannot be undone.`)) return;
-  S.nb.pages.splice(S.pi, 1); S.thumbDirty = true; goPage(S.pi); saveSoon();
-}
 $('#btnPageNo').onclick = () => { $('#pageStrip').hidden = !$('#pageStrip').hidden; if (!$('#pageStrip').hidden) renderThumbs(); };
 $('#btnStripClose').onclick = () => { $('#pageStrip').hidden = true; };
 function renderThumbs() {
   const box = $('#thumbs'); box.innerHTML = '';
+  const n = S.nb.pages.length;
   S.nb.pages.forEach((pg, i) => {
-    const b = document.createElement('button'); b.className = 'thumb' + (i === S.pi ? ' cur' : '');
-    const cv = document.createElement('canvas'); const w = 130, s = w / R.PAGE_W; cv.width = w * 2; cv.height = Math.round(R.PAGE_H * s) * 2;
-    const c = cv.getContext('2d'); c.scale(s * 2, s * 2); R.renderPage(c, pg, { onImage: () => {} });
-    const n = document.createElement('div'); n.className = 'n'; n.textContent = `Page ${i + 1}`;
-    b.append(cv, n); b.onclick = () => { goPage(i); renderThumbs(); };
+    const b = document.createElement('div'); b.className = 'thumb' + (i === S.pi ? ' cur' : ''); b.dataset.i = i;
+    const cv = document.createElement('canvas'); const w = 130, sc = w / R.PAGE_W; cv.width = w * 2; cv.height = Math.round(R.PAGE_H * sc) * 2;
+    const c = cv.getContext('2d'); c.scale(sc * 2, sc * 2); R.renderPage(c, pg, { onImage: () => {} });
+    const lbl = document.createElement('div'); lbl.className = 'n'; lbl.textContent = `Page ${i + 1}`;
+    const acts = document.createElement('div'); acts.className = 'acts';
+    const act = (txt, title, fn, dis) => { const x = document.createElement('button'); x.textContent = txt; x.title = title; x.disabled = !!dis; x.onclick = ev => { ev.stopPropagation(); fn(); }; acts.appendChild(x); };
+    act('▲', 'Move page up', () => movePage(i, i - 1), i === 0);
+    act('▼', 'Move page down', () => movePage(i, i + 1), i === n - 1);
+    act('⧉', 'Duplicate page', () => duplicatePage(i));
+    act('→', 'Copy page to another notebook', () => copyPageDialog(i));
+    act('🗑', 'Delete page', () => deletePageAt(i), n <= 1);
+    b.append(cv, lbl, acts);
+    attachThumbDrag(b, i, cv);
     box.appendChild(b);
   });
   const add = document.createElement('button'); add.className = 'thumb add'; add.textContent = '+ Add page'; add.onclick = addPage; box.appendChild(add);
   const cur = box.querySelector('.cur'); if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+function clonePage(pg) { return { id: uid(), template: pg.template, elements: pg.elements.map(e => { const c = cloneEl(e); c.id = uid(); return c; }) }; }
+function movePage(from, to) {
+  const pages = S.nb.pages; if (to < 0 || to >= pages.length || from === to) return;
+  const [pg] = pages.splice(from, 1); pages.splice(to, 0, pg);
+  S.thumbDirty = true; goPage(to); renderThumbs(); saveSoon();
+}
+function duplicatePage(i) {
+  S.nb.pages.splice(i + 1, 0, clonePage(S.nb.pages[i]));
+  S.thumbDirty = true; goPage(i + 1); renderThumbs(); saveSoon(); toast(`Page ${i + 1} duplicated`);
+}
+function deletePageAt(i) {
+  if (S.nb.pages.length <= 1) { toast('A notebook needs at least one page.'); return; }
+  if (!confirm(`Delete page ${i + 1}? This cannot be undone.`)) return;
+  const np = i < S.pi ? S.pi - 1 : S.pi;
+  S.nb.pages.splice(i, 1); S.thumbDirty = true; goPage(Math.min(np, S.nb.pages.length - 1)); renderThumbs(); saveSoon();
+}
+async function copyPageDialog(i) {
+  const metas = (await DB.all('meta')).filter(m => m.id !== S.nb.id).sort((a, b) => b.updated - a.updated);
+  const list = $('#copyList'); list.innerHTML = '';
+  if (!metas.length) { list.innerHTML = '<p class="hint">You have no other notebooks yet. Create one from the home screen first.</p>'; }
+  for (const m of metas) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'menuitem'; b.textContent = `${m.name}  (${m.pages} page${m.pages === 1 ? '' : 's'})`;
+    b.onclick = async () => {
+      $('#dlgCopy').close('done');
+      try {
+        const target = await DB.get('notebooks', m.id); if (!target) throw new Error('notebook not found');
+        target.pages.push(clonePage(S.nb.pages[i])); target.updated = Date.now();
+        await DB.put('notebooks', target);
+        await DB.put('meta', { ...m, pages: target.pages.length, updated: target.updated });
+        toast(`Page ${i + 1} copied to “${m.name}” as its page ${target.pages.length}`);
+      } catch (e) { console.error(e); toast('Could not copy the page.'); }
+    };
+    list.appendChild(b);
+  }
+  $('#dlgCopy').showModal();
+}
+/* drag a thumbnail to reorder: hold still for a moment, then drag (so the list can still scroll) */
+let thumbDrag = null;
+$('#thumbs').addEventListener('touchmove', e => { if (thumbDrag && thumbDrag.active) e.preventDefault(); }, { passive: false });
+function attachThumbDrag(el, i, cv) {
+  el.addEventListener('pointerdown', e => {
+    if (e.target.closest('.acts')) return;
+    const box = $('#thumbs'), y0 = e.clientY, x0 = e.clientX;
+    thumbDrag = { active: false, target: i, timer: null };
+    const d = thumbDrag;
+    d.timer = setTimeout(() => { d.active = true; el.classList.add('dragging'); try { el.setPointerCapture(e.pointerId); } catch {} }, 320);
+    const thumbsAt = () => [...box.querySelectorAll('.thumb[data-i]')];
+    const move = ev => {
+      if (!d.active) { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) { clearTimeout(d.timer); cleanup(); } return; }
+      ev.preventDefault();
+      let insertBefore = S.nb.pages.length;
+      for (const t of thumbsAt()) { const r = t.getBoundingClientRect(); if (ev.clientY < r.top + r.height / 2) { insertBefore = +t.dataset.i; break; } }
+      d.target = insertBefore;
+      thumbsAt().forEach(t => t.classList.toggle('drop-before', +t.dataset.i === insertBefore));
+      box.classList.toggle('drop-end', insertBefore === S.nb.pages.length);
+      const br = box.getBoundingClientRect();
+      if (ev.clientY < br.top + 40) box.scrollTop -= 10; else if (ev.clientY > br.bottom - 40) box.scrollTop += 10;
+    };
+    const up = ev => {
+      clearTimeout(d.timer);
+      const wasActive = d.active; cleanup();
+      if (!wasActive) { if (ev.type === 'pointerup' && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= 8) { goPage(i); renderThumbs(); } return; }
+      let to = d.target > i ? d.target - 1 : d.target;
+      to = clamp(to, 0, S.nb.pages.length - 1);
+      if (to !== i) movePage(i, to); else renderThumbs();
+    };
+    function cleanup() {
+      el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
+      el.classList.remove('dragging'); thumbsAt().forEach(t => t.classList.remove('drop-before')); box.classList.remove('drop-end');
+      thumbDrag = null;
+    }
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
 }
 
 /* ---------------- menu ---------------- */
@@ -680,7 +765,7 @@ $('#dlgMenu').addEventListener('close', async () => {
     case 'pdfpage': await doExportPDF([S.pi]); break;
     case 'png': await doExportPNG(); break;
     case 'paper': openPaperDialog(); break;
-    case 'deletepage': deletePage(); break;
+    case 'deletepage': deletePageAt(S.pi); break;
     case 'rename': renameNotebook(); break;
     case 'backup': await doBackup(); break;
     case 'deletenb': await deleteNotebook(); break;

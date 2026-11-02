@@ -37,15 +37,17 @@
   <header class="bar">
     <button id="btnHome" class="btn icon" title="All notebooks" aria-label="All notebooks">‹</button>
     <button id="btnTitle" class="title" title="Rename"></button>
+    <div class="undogroup">
+      <button id="btnUndo" class="btn icon" title="Undo" aria-label="Undo">↶</button>
+      <button id="btnRedo" class="btn icon" title="Redo" aria-label="Redo">↷</button>
+    </div>
     <div class="spacer"></div>
     <div class="pagenav">
       <button id="btnPrev" class="btn icon" title="Previous page">‹</button>
       <button id="btnPageNo" class="btn pageno" title="Show pages">1 / 1</button>
       <button id="btnNext" class="btn icon" title="Next page">›</button>
-      <button id="btnAddPage" class="btn icon" title="Add page after this one">+</button>
     </div>
-    <button id="btnUndo" class="btn icon" title="Undo" aria-label="Undo">↶</button>
-    <button id="btnRedo" class="btn icon" title="Redo" aria-label="Redo">↷</button>
+    <button id="btnAddPage" class="btn addpage" title="Add a page after this one">+ Page</button>
     <button id="btnMenu" class="btn icon" title="Menu" aria-label="Menu">⋯</button>
   </header>
 
@@ -147,6 +149,14 @@
   </form>
 </dialog>
 
+<dialog id="dlgCopy">
+  <form method="dialog">
+    <h2>Copy this page to…</h2>
+    <div id="copyList" class="copylist"></div>
+    <div class="actions"><button type="button" class="btn cancel">Cancel</button></div>
+  </form>
+</dialog>
+
 <dialog id="dlgPaper">
   <form method="dialog">
     <h2>Paper for this page</h2>
@@ -163,11 +173,11 @@
       <li><b>Write and draw</b> with the Apple Pencil using Pen or Highlighter. Press harder for a thicker line.</li>
       <li><b>Pencil only</b> (bottom right) means fingers never draw: one finger scrolls, two fingers pinch to zoom. Turn it off to draw with a finger.</li>
       <li><b>Eraser</b> removes whole strokes you touch.</li>
-      <li><b>Select</b>: tap something to select it, or draw a loop around several things. Drag to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
+      <li><b>Select</b>: tap something to select it, or draw a loop around several things. Once selected, drag it to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
       <li><b>Boxes, circles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable.</li>
       <li><b>Text</b>: pick Text and tap the page. Type, or write in the box with the Pencil and the iPad turns it into typed text (Scribble). Double‑tap a text box later to edit it.</li>
       <li><b>Photo</b> and <b>Link</b> insert in the middle of the view. Select a link and tap Open to visit it.</li>
-      <li><b>Pages</b>: use ‹ › at the top, + to add a page, or tap the page number to see all pages.</li>
+      <li><b>Pages</b>: use ‹ › at the top, <b>+ Page</b> to add one, or tap the page number to open the page list. There you can move a page with ▲ ▼ (or hold a thumbnail and drag it), duplicate it, copy it to another notebook, or delete it.</li>
       <li><b>Export</b> from the ⋯ menu. Choose Google Drive in the share sheet to send a PDF to Claude.</li>
       <li>Everything is saved on this device automatically and works with no internet. Add the app to your Home Screen from Safari’s Share menu.</li>
     </ul>
