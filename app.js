@@ -121,7 +121,10 @@ function render() {
   ctx.translate(v.x, v.y); ctx.scale(v.s, v.s);
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, R.PAGE_W, R.PAGE_H); ctx.clip();
   for (const el of S.sel) if (el !== S.editing) R.drawElement(ctx, el, { onImage: requestRender });
-  if (gesture && gesture.kind === 'stroke') R.drawElement(ctx, gesture.el, { live: true });
+  if (gesture && gesture.kind === 'stroke') {
+    const pr = gesture.predicted && gesture.predicted.length ? { ...gesture.el, points: gesture.el.points.concat(gesture.predicted) } : gesture.el;
+    R.drawElement(ctx, pr, { live: true });
+  }
   if (gesture && gesture.kind === 'shape') R.drawElement(ctx, gesture.el, {});
   ctx.restore();
   if (gesture && gesture.kind === 'lasso' && gesture.pts.length > 1) {
@@ -254,6 +257,8 @@ function thumbnail(pg, w) {
 
 /* ---------------- pointer input ---------------- */
 const pointers = new Map();
+let lastPenTime = -1e9;   // last time the Apple Pencil touched or hovered: hand contacts near that moment are ignored
+const PEN_GRACE_MS = 600;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('pointerdown', onDown);
 canvas.addEventListener('pointermove', onMove);
@@ -263,20 +268,33 @@ canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && 
 
 function onDown(e) {
   if (S.editing) finishEdit();
+  const now = performance.now();
   if (e.pointerType === 'pen' && !S.pencilOnly && !localStorage.getItem('penSeen')) {
     localStorage.setItem('penSeen', '1'); setPencilOnly(true); toast('Apple Pencil detected: fingers now scroll and zoom.');
   }
   if (e.pointerType === 'touch') {
+    if (S.pencilOnly) {
+      // The side of the writing hand: a contact while the Pencil is down, right after it was used, or palm-sized. Never let it touch a stroke.
+      const palm = (e.width || 0) > 40 || (e.height || 0) > 40;
+      if (palm || (gesture && gesture.pen) || now - lastPenTime < PEN_GRACE_MS) return;
+    }
     pointers.set(e.pointerId, stagePt(e));
-    if (pointers.size === 2) { if (gesture) cancelGesture(); nav = pinchStart(); return; }
+    if (pointers.size === 2) { if (gesture && !gesture.pen) cancelGesture(); nav = pinchStart(); return; }
     if (pointers.size > 2) return;
     if (S.pencilOnly) { const p = stagePt(e); nav = { kind: 'pan', x: p[0], y: p[1], vx: S.view.x, vy: S.view.y }; return; }
-  } else { pointers.clear(); nav = null; if (gesture) cancelGesture(); }
+  } else {
+    if (e.pointerType === 'pen') lastPenTime = now;
+    pointers.clear(); nav = null;
+    if (gesture && gesture.pen) endGesture(e);        // a missed pen-up: keep that stroke rather than drop it
+    else if (gesture) cancelGesture();
+  }
   if (gesture) return;
   try { canvas.setPointerCapture(e.pointerId); } catch {}
   startGesture(e);
+  if (gesture) gesture.pen = e.pointerType !== 'touch';
 }
 function onMove(e) {
+  if (e.pointerType === 'pen') lastPenTime = performance.now();
   if (e.pointerType === 'touch' && pointers.has(e.pointerId)) {
     pointers.set(e.pointerId, stagePt(e));
     if (nav && nav.kind === 'pinch') { pinchMove(); return; }
@@ -286,8 +304,12 @@ function onMove(e) {
   let evs = [e];
   if (gesture.kind === 'stroke' && e.getCoalescedEvents) { const co = e.getCoalescedEvents(); if (co.length) evs = co; }
   for (const ev of evs) moveGesture(ev);
+  if (gesture && gesture.kind === 'stroke') {   // predicted points: drawn live only, never stored
+    gesture.predicted = e.getPredictedEvents ? e.getPredictedEvents().map(pe => { const q = evPage(pe); return [q[0], q[1], pressureOf(pe)]; }) : [];
+  }
 }
 function onUp(e) {
+  if (e.pointerType === 'pen') lastPenTime = performance.now();
   if (e.pointerType === 'touch') {
     pointers.delete(e.pointerId);
     if (nav) {
@@ -316,7 +338,7 @@ stage.addEventListener('wheel', e => {
   else { S.view.x -= e.deltaX; S.view.y -= e.deltaY; clampView(); requestRender(); }
 }, { passive: false });
 
-const pressureOf = e => e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5;
+const pressureOf = e => e.pointerType === 'pen' ? (e.pressure > 0 ? Math.max(0.2, e.pressure) : 0.5) : 0.5;
 
 function startGesture(e) {
   const p = evPage(e), id = e.pointerId;
@@ -521,7 +543,15 @@ function endGesture() {
     case 'stroke': {
       const el = g.el;
       if (el.points.length === 1) el.points.push([el.points[0][0] + 0.3, el.points[0][1] + 0.3, el.points[0][2]]);
-      page().elements.push(el); commit(opAdd([el])); break;
+      page().elements.push(el);
+      const v = S.view, canAppend = !layerDirty && layerView && layerView.s === v.s && layerView.x === v.x && layerView.y === v.y && !S.sel.length && !S.editing;
+      commit(opAdd([el]));
+      if (canAppend) {   // paint just this stroke into the cached layer instead of rebuilding the page
+        lctx.setTransform(dpr, 0, 0, dpr, 0, 0); lctx.translate(v.x, v.y); lctx.scale(v.s, v.s);
+        lctx.save(); lctx.beginPath(); lctx.rect(0, 0, R.PAGE_W, R.PAGE_H); lctx.clip(); R.drawElement(lctx, el, {}); lctx.restore();
+        layerDirty = false;
+      }
+      break;
     }
     case 'erase':
       if (g.removed.length) commit(opRemove(g.removed));

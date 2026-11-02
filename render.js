@@ -46,7 +46,7 @@ export function drawMarks(ctx, marks) {
 /* ---------- ink ---------- */
 export function strokeOpts(el, live) {
   if (el.tool === 'highlighter') return { size: el.size, thinning: 0, smoothing: 0.6, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true }, end: { cap: true } };
-  return { size: el.size, thinning: 0.55, smoothing: 0.5, streamline: 0.45, simulatePressure: !!el.sim, last: !live };
+  return { size: el.size, thinning: 0.5, smoothing: 0.5, streamline: 0.4, simulatePressure: !!el.sim, last: !live };
 }
 
 /* Outline polygon -> path commands (quadratic curves through midpoints, like the perfect-freehand docs). */
