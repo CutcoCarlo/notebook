@@ -1,6 +1,7 @@
 /* export.js — PDF (vector) and PNG export of notebook pages. */
 import { PAGE_W, PAGE_H, templateMarks, strokeCommands, layoutText, corners, fromLocal, arrowHead,
-         TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection, tintedFill } from './render.js';
+         TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection, tintedFill,
+         textLayout, drawElement } from './render.js';
 
 const rgb = hex => {
   if (!hex || hex[0] !== '#') return [0, 0, 0];
@@ -89,14 +90,30 @@ async function drawPagePDF(doc, page) {
         break;
       }
       case 'text': {
-        const lines = el._lines || layoutText(el);
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(el.size); doc.setTextColor(...rgb(el.color));
-        const lh = el.size * 1.3, angle = -(el.rot || 0) * 180 / Math.PI;
-        lines.forEach((ln, i) => {
-          if (!ln) return;
-          const [x, y] = fromLocal(el, [-el.w / 2 + TEXT_PAD, -el.h / 2 + TEXT_PAD + i * lh]);
-          doc.text(ln, x, y, { angle, baseline: 'top' });
-        });
+        const lay = textLayout(el);
+        const std = f => ({ helvetica: 'helvetica', arial: 'helvetica', 'times new roman': 'times', georgia: 'times', 'courier new': 'courier' })[String(f || 'Helvetica').toLowerCase()];
+        const allStd = lay.lines.every(ln => ln.tokens.every(tk => std(tk.st.font)));
+        if (!allStd) {   // fonts jsPDF does not have: draw the box exactly as on screen and embed it as a picture
+          const cs = corners(el);
+          const bw = Math.max(...cs.map(p => p[0])) - Math.min(...cs.map(p => p[0])), bh = Math.max(...cs.map(p => p[1])) - Math.min(...cs.map(p => p[1]));
+          const k = 3, cv = document.createElement('canvas'); cv.width = Math.ceil(bw * k); cv.height = Math.ceil(bh * k);
+          const ctx = cv.getContext('2d'); ctx.scale(k, k); ctx.translate(bw / 2 - el.cx, bh / 2 - el.cy); drawElement(ctx, el, {});
+          doc.addImage(cv.toDataURL('image/png'), 'PNG', el.cx - bw / 2, el.cy - bh / 2, bw, bh, undefined, 'FAST');
+          break;
+        }
+        const angle = -(el.rot || 0) * 180 / Math.PI, x0 = -el.w / 2 + TEXT_PAD, y0 = -el.h / 2 + TEXT_PAD;
+        for (const ln of lay.lines) for (const tk of ln.tokens) {
+          const t = tk.text.replace(/\s+$/, ''); if (!t) continue;
+          doc.setFont(std(tk.st.font), tk.st.b && tk.st.i ? 'bolditalic' : tk.st.b ? 'bold' : tk.st.i ? 'italic' : 'normal');
+          doc.setFontSize(tk.st.size); doc.setTextColor(...rgb(tk.st.color || el.color));
+          const lx = x0 + ln.offset + tk.x, ly = y0 + ln.baseline;
+          const [x, y] = fromLocal(el, [lx, ly]);
+          doc.text(t, x, y, { angle, baseline: 'alphabetic' });
+          if (tk.st.u) {
+            const [ax, ay] = fromLocal(el, [lx, ly + tk.st.size * 0.12]), [bx, by] = fromLocal(el, [lx + tk.wTrim, ly + tk.st.size * 0.12]);
+            doc.setDrawColor(...rgb(tk.st.color || el.color)); doc.setLineWidth(Math.max(0.8, tk.st.size / 14)); doc.line(ax, ay, bx, by);
+          }
+        }
         break;
       }
       case 'image': {

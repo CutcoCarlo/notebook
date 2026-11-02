@@ -634,7 +634,7 @@ function scaleEl(el, s, ax, ay, k) {
   if (s.pts) { el.pts = s.pts.map(q => [ax + (q[0] - ax) * k, ay + (q[1] - ay) * k]); el.width = s.width * k; R.syncLine(el); return; }
   el.cx = ax + (s.cx - ax) * k; el.cy = ay + (s.cy - ay) * k; el.w = s.w * k; el.h = s.h * k;
   if (el.type === 'shape') el.width = s.width * k;
-  if (el.type === 'text') { el.size = s.size * k; R.layoutText(el); }
+  if (el.type === 'text') { el.doc = R.textDoc(s); scaleTextSizes(el, k); }
 }
 function rotateEl(el, s, cx, cy, da) {
   const c = Math.cos(da), sn = Math.sin(da);
@@ -682,13 +682,14 @@ function applyHandle(p) {
 /* ---------------- selection toolbar ---------------- */
 function updateSelBar() {
   selBar.innerHTML = '';
-  if (!S.sel.length || S.editing) { selBar.hidden = true; return; }
+  if (S.editing) { buildFormatBar(); return; }
+  if (!S.sel.length) { selBar.hidden = true; return; }
   const sel = S.sel, hasShape = sel.some(e => e.type === 'shape' && (e.kind === 'rect' || e.kind === 'ellipse'));
   const colorable = sel.some(e => e.type !== 'image' && e.type !== 'link');
   const add = (label, fn, cls) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = fn; selBar.appendChild(b); return b; };
   const sep = () => { const s = document.createElement('span'); s.className = 'sep'; selBar.appendChild(s); };
   if (colorable) {
-    for (const c of COLORS) { const b = add('', () => mutateSel(e => { if (e.type !== 'image' && e.type !== 'link') e.color = c; }), 'sw'); b.style.background = c; b.title = 'Color'; }
+    for (const c of COLORS) { const b = add('', () => mutateSel(e => setElColor(e, c)), 'sw'); b.style.background = c; b.title = 'Color'; }
     sep();
   }
   if (hasShape) {
@@ -714,6 +715,15 @@ function positionSelBar() {
   if (top < 6) top = toScreen([b.x1, b.y1])[1] + 14;
   selBar.style.left = clamp(left, 6, Math.max(6, W - bw - 6)) + 'px'; selBar.style.top = clamp(top, 6, Math.max(6, H - bh - 6)) + 'px';
 }
+function setElColor(e, c) {
+  if (e.type === 'image' || e.type === 'link') return;
+  e.color = c;
+  if (e.type === 'text') { e.doc = R.textDoc(e).map(p => ({ ...p, spans: p.spans.map(sp => ({ ...sp, color: c })) })); R.layoutText(e); }
+}
+function scaleTextSizes(e, k) {
+  e.doc = R.textDoc(e).map(p => ({ ...p, spans: p.spans.map(sp => ({ ...sp, size: clamp(Math.round(sp.size * k * 2) / 2, 6, 160) })) }));
+  e.size = e.doc[0] && e.doc[0].spans[0] ? e.doc[0].spans[0].size : e.size; R.layoutText(e);
+}
 function mutateSel(fn) {
   const before = S.sel.map(cloneEl);
   S.sel.forEach(fn); S.sel.forEach(e => e.type === 'text' && R.layoutText(e));
@@ -723,7 +733,7 @@ function resizeSel(k) {
   mutateSel(e => {
     if (e.type === 'stroke') e.size *= k;
     else if (e.type === 'shape') e.width = clamp(e.width * k, 0.5, 30);
-    else if (e.type === 'text') e.size = clamp(Math.round(e.size * k), 6, 120);
+    else if (e.type === 'text') scaleTextSizes(e, k);
   });
 }
 function duplicateSel() {
@@ -741,37 +751,147 @@ function deleteSel() {
   const items = removeEls(S.sel); setSel([]); commit(opRemove(items)); requestRender();
 }
 
-/* ---------------- text editing ---------------- */
+/* ---------------- text editing (rich text, in place) ---------------- */
+const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function spanStyle(sp) {
+  return `font-size:${sp.size}px;font-family:'${sp.font || 'Helvetica'}',Helvetica,Arial,sans-serif;color:${sp.color || '#111827'};` +
+    (sp.b ? 'font-weight:bold;' : 'font-weight:normal;') + (sp.i ? 'font-style:italic;' : '') + (sp.u ? 'text-decoration:underline;' : '');
+}
+function docToHTML(doc) {
+  return doc.map(p => {
+    const inner = p.spans.map(sp => sp.t ? `<span style="${spanStyle(sp)}">${esc(sp.t)}</span>` : '').join('');
+    return `<div style="text-align:${p.align || 'left'}">${inner || '<br>'}</div>`;
+  }).join('');
+}
+const rgbToHex = c => { const m = String(c).match(/\d+(\.\d+)?/g); if (!m || m.length < 3) return c && c[0] === '#' ? c : '#111827'; return '#' + m.slice(0, 3).map(v => Math.round(+v).toString(16).padStart(2, '0')).join(''); };
+function styleOf(node, fallback) {
+  const cs = getComputedStyle(node);
+  const fam = (cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim() || 'Helvetica';
+  return { size: Math.round(parseFloat(cs.fontSize) * 2) / 2 || fallback.size, font: R.FONTS.includes(fam) ? fam : fallback.font || 'Helvetica',
+    color: rgbToHex(cs.color), b: cs.fontWeight === 'bold' || parseInt(cs.fontWeight, 10) >= 600, i: cs.fontStyle === 'italic', u: (cs.textDecorationLine || cs.textDecoration || '').includes('underline') };
+}
+/* read the editor's DOM back into paragraphs of spans */
+function docFromEditor(fallback) {
+  const paras = []; let cur = null;
+  const open = node => { const al = node && node.nodeType === 1 ? getComputedStyle(node).textAlign : 'left'; cur = { align: ['center', 'right'].includes(al) ? al : 'left', spans: [] }; paras.push(cur); };
+  const pushText = (text, node) => {
+    if (!cur) open(null);
+    const st = styleOf(node, fallback), last = cur.spans[cur.spans.length - 1];
+    if (last && last.size === st.size && last.font === st.font && last.color === st.color && !!last.b === st.b && !!last.i === st.i && !!last.u === st.u) last.t += text;
+    else cur.spans.push({ t: text, ...st });
+  };
+  const walk = (node, inBlock) => {
+    for (const ch of node.childNodes) {
+      if (ch.nodeType === 3) { if (ch.nodeValue) pushText(ch.nodeValue.replace(/ /g, ' '), ch.parentElement); continue; }
+      if (ch.nodeType !== 1) continue;
+      const tag = ch.tagName;
+      if (tag === 'BR') { if (!cur) open(null); cur = null; continue; }
+      const block = ['DIV', 'P', 'LI', 'H1', 'H2', 'H3'].includes(tag);
+      if (block) { open(ch); walk(ch, true); cur = null; }
+      else walk(ch, inBlock);
+    }
+  };
+  walk(ta, false);
+  if (!paras.length) paras.push({ align: 'left', spans: [] });
+  for (const p of paras) if (!p.spans.length) p.spans.push({ t: '', ...fallback });
+  return paras;
+}
+let savedRange = null;
+document.addEventListener('selectionchange', () => {
+  if (!S.editing) return;
+  const sel = document.getSelection();
+  if (sel && sel.rangeCount && ta.contains(sel.anchorNode)) savedRange = sel.getRangeAt(0).cloneRange();
+});
+function restoreRange() {
+  ta.focus();
+  if (savedRange) { const sel = document.getSelection(); sel.removeAllRanges(); sel.addRange(savedRange); }
+}
+function exec(cmd, val) {
+  restoreRange();
+  try { document.execCommand('styleWithCSS', false, true); } catch {}
+  document.execCommand(cmd, false, val);
+  ta.dispatchEvent(new Event('input'));
+}
+function applyFontSize(px) {
+  exec('fontSize', '7');
+  ta.querySelectorAll('font[size="7"], span[style*="xxx-large"]').forEach(n => { n.removeAttribute('size'); n.style.fontSize = px + 'px'; });
+  ta.dispatchEvent(new Event('input'));
+}
+function currentStyle() {
+  const sel = document.getSelection(); let node = sel && sel.anchorNode; if (!node) return null;
+  if (node.nodeType === 3) node = node.parentElement;
+  if (!ta.contains(node) || node === ta) return null;
+  return styleOf(node, { size: S.editing.size, font: 'Helvetica' });
+}
+function buildFormatBar() {
+  selBar.innerHTML = '';
+  const st = currentStyle() || (R.textDoc(S.editing)[0].spans[0]) || { size: 16, font: 'Helvetica' };
+  const mk = (tag, cls) => { const x = document.createElement(tag); if (cls) x.className = cls; selBar.appendChild(x); return x; };
+  const font = mk('select'); for (const f of R.FONTS) { const o = document.createElement('option'); o.value = f; o.textContent = f; o.style.fontFamily = f; if (f === st.font) o.selected = true; font.appendChild(o); }
+  font.onchange = () => { exec('fontName', font.value); };
+  const size = mk('select'); for (const n of [9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 64]) { const o = document.createElement('option'); o.value = n; o.textContent = n; if (n === Math.round(st.size)) o.selected = true; size.appendChild(o); }
+  size.onchange = () => applyFontSize(+size.value);
+  const btn = (label, cls, fn, on) => { const b = mk('button', 'fmt ' + cls + (on ? ' on' : '')); b.textContent = label; b.onclick = fn; return b; };
+  btn('B', '', () => exec('bold'), st.b); btn('I', '', () => exec('italic'), st.i).style.fontStyle = 'italic'; btn('U', '', () => exec('underline'), st.u).style.textDecoration = 'underline';
+  mk('span', 'sep');
+  for (const c of COLORS) { const b = mk('button', 'sw'); b.style.background = c; b.title = 'Colour'; b.onclick = () => exec('foreColor', c); }
+  mk('span', 'sep');
+  btn('⇤', '', () => exec('justifyLeft')); btn('↔', '', () => exec('justifyCenter')); btn('⇥', '', () => exec('justifyRight'));
+  mk('span', 'sep');
+  const done = mk('button'); done.textContent = 'Done'; done.onclick = () => finishEdit();
+  selBar.hidden = false; positionSelBar();
+}
+selBar.addEventListener('pointerdown', e => { if (S.editing && e.target.tagName !== 'SELECT') e.preventDefault(); });   // keep the text selection alive
+
 function createText(p) {
-  const el = { type: 'text', id: uid(), cx: p[0] + 100, cy: p[1], w: 200, h: 30, rot: 0, text: '', size: R.TEXT_SIZES[S.size], color: S.color };
+  const el = { type: 'text', id: uid(), cx: p[0] + 100, cy: p[1], w: 200, h: 30, rot: 0, text: '', size: R.TEXT_SIZES[S.size], color: S.color,
+    doc: [{ align: 'left', spans: [{ t: '', size: R.TEXT_SIZES[S.size], color: S.color, font: 'Helvetica' }] }] };
   R.layoutText(el); el.cy = p[1] + el.h / 2;
   page().elements.push(el); setTool('select'); setSel([el]); startEdit(el, true);
 }
 function startEdit(el, isNew) {
   S.editing = el; S.editBefore = cloneEl(el); S.editIsNew = !!isNew; layerDirty = true;
-  ta.hidden = false; ta.value = el.text; positionTA(); updateSelBar(); requestRender();
+  const doc = R.textDoc(el); el.doc = doc;
+  ta.hidden = false; ta.innerHTML = docToHTML(doc); positionTA(); requestRender();
   // focus synchronously: iPadOS only shows the keyboard when focus happens inside the tap handler
-  ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch {}
+  ta.focus();
+  try { const r = document.createRange(); r.selectNodeContents(ta); r.collapse(false); const sel = document.getSelection(); sel.removeAllRanges(); sel.addRange(r); savedRange = r.cloneRange(); } catch {}
+  updateSelBar();
 }
 function positionTA() {
   const el = S.editing, s = S.view.s, [sx, sy] = toScreen([el.cx, el.cy]);
-  ta.style.left = sx + 'px'; ta.style.top = sy + 'px'; ta.style.width = el.w * s + 'px'; ta.style.height = el.h * s + 'px';
-  ta.style.fontSize = el.size * s + 'px'; ta.style.padding = R.TEXT_PAD * s + 'px'; ta.style.color = el.color;
-  ta.style.transform = `translate(-50%,-50%) rotate(${el.rot || 0}rad)`;
+  const base = (R.textDoc(el)[0].spans[0]) || { size: el.size, color: el.color };
+  ta.style.left = sx + 'px'; ta.style.top = sy + 'px'; ta.style.width = el.w + 'px'; ta.style.minHeight = el.h + 'px';
+  ta.style.fontSize = base.size + 'px'; ta.style.padding = R.TEXT_PAD + 'px'; ta.style.color = base.color || el.color;
+  ta.style.fontFamily = `"${base.font || 'Helvetica'}", Helvetica, Arial, sans-serif`;
+  ta.style.transform = `translate(-50%,-50%) rotate(${el.rot || 0}rad) scale(${s})`;
 }
-ta.addEventListener('input', () => { const el = S.editing; if (!el) return; el.text = ta.value; R.layoutText(el); positionTA(); requestRender(); });
-ta.addEventListener('blur', () => setTimeout(() => { if (S.editing && document.activeElement !== ta) finishEdit(); }, 50));
+ta.addEventListener('input', () => {
+  const el = S.editing; if (!el) return;
+  const base = R.textDoc(el)[0].spans[0] || { size: el.size, color: el.color, font: 'Helvetica' };
+  const h0 = el.h;
+  el.doc = docFromEditor({ size: base.size, color: base.color, font: base.font }); R.layoutText(el);
+  if (el.h !== h0) { const dh = el.h - h0, rot = el.rot || 0; el.cx += -Math.sin(rot) * dh / 2; el.cy += Math.cos(rot) * dh / 2; }   // top edge stays put
+  positionTA(); requestRender(); if (!selBar.hidden) positionSelBar();
+});
+ta.addEventListener('blur', () => setTimeout(() => { if (S.editing && document.activeElement !== ta && !selBar.contains(document.activeElement)) finishEdit(); }, 60));
 ta.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); finishEdit(); } });
 function finishEdit() {
   const el = S.editing; if (!el) return;
-  S.editing = null; ta.hidden = true; layerDirty = true;
+  const base = R.textDoc(el)[0].spans[0] || { size: el.size, color: el.color, font: 'Helvetica' };
+  el.doc = docFromEditor({ size: base.size, color: base.color, font: base.font }); R.layoutText(el);
+  el.size = base.size; el.color = base.color;
+  S.editing = null; ta.hidden = true; ta.innerHTML = ''; layerDirty = true; savedRange = null;
   const before = S.editBefore, isNew = S.editIsNew; S.editBefore = null; S.editIsNew = false;
   if (!page().elements.includes(el)) { updateSelBar(); requestRender(); return; }
   if (!el.text.trim()) { removeEls([el]); setSel([]); saveSoon(); }
   else if (isNew) commit(opAdd([el]));
-  else if (el.text !== before.text) commit(opModify([before], [cloneEl(el)]));
+  else if (JSON.stringify(el.doc) !== JSON.stringify(R.textDoc(before))) commit(opModify([before], [cloneEl(el)]));
   updateSelBar(); requestRender();
 }
+ta.addEventListener('paste', e => {   // paste as plain text so outside formatting does not sneak in
+  e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text/plain'); document.execCommand('insertText', false, t);
+});
 
 /* ---------------- inserts: image & link ---------------- */
 $('#btnImage').onclick = () => { if (S.editing) finishEdit(); $('#fileImage').value = ''; $('#fileImage').click(); };
@@ -826,7 +946,7 @@ function setColor(c, custom) {
   S.color = c;
   $$('#colors button').forEach(b => b.classList.toggle('on', !custom && b.dataset.color === c));
   $('.custom').classList.toggle('on', !!custom);
-  if (S.tool === 'select' && S.sel.length) mutateSel(e => { if (e.type !== 'image' && e.type !== 'link') e.color = c; });
+  if (S.tool === 'select' && S.sel.length) mutateSel(e => setElColor(e, c));
 }
 $$('#sizes button').forEach(b => b.onclick = () => setSize(b.dataset.size));
 function setSize(s) { S.size = s; $$('#sizes button').forEach(b => b.classList.toggle('on', b.dataset.size === s)); }

@@ -80,34 +80,70 @@ export function strokePath(el) {
   return p;
 }
 
-/* ---------- text layout ---------- */
+/* ---------- rich text layout ----------
+   A text element holds `doc`: paragraphs [{ align, spans: [{ t, b, i, u, size, font, color }] }].
+   Older elements only have `text`; textDoc() upgrades them on the fly. */
 const mctx = document.createElement('canvas').getContext('2d');
 export const TEXT_PAD = 4;
-export function layoutText(el) {
-  mctx.font = `${el.size}px ${FONT}`;
-  const maxW = Math.max(10, el.w - TEXT_PAD * 2);
-  const lines = [];
-  for (const para of String(el.text || '').split('\n')) {
-    let cur = '';
-    for (const word of para.split(' ')) {
-      const test = cur ? cur + ' ' + word : word;
-      if (mctx.measureText(test).width <= maxW) { cur = test; continue; }
-      if (cur) lines.push(cur);
-      // word longer than the box: break by character
-      if (mctx.measureText(word).width > maxW) {
-        let piece = '';
-        for (const ch of word) {
-          if (mctx.measureText(piece + ch).width > maxW && piece) { lines.push(piece); piece = ch; } else piece += ch;
-        }
-        cur = piece;
-      } else cur = word;
-    }
-    lines.push(cur);
+export const FONTS = ['Helvetica', 'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Trebuchet MS', 'Palatino',
+  'Avenir Next', 'Futura', 'Gill Sans', 'American Typewriter', 'Marker Felt', 'Noteworthy', 'Chalkboard SE', 'Bradley Hand', 'Snell Roundhand'];
+export function fontString(st) { return `${st.i ? 'italic ' : ''}${st.b ? 'bold ' : ''}${st.size}px "${st.font || 'Helvetica'}", Helvetica, Arial, sans-serif`; }
+export function textDoc(el) {
+  if (el.doc && el.doc.length) return el.doc;
+  return String(el.text || '').split('\n').map(line => ({ align: 'left', spans: [{ t: line, size: el.size || 16, color: el.color || '#111827', font: 'Helvetica' }] }));
+}
+export function docText(doc) { return doc.map(p => p.spans.map(sp => sp.t).join('')).join('\n'); }
+const metricCache = new Map();
+function metrics(st) {
+  const key = fontString(st); let m = metricCache.get(key);
+  if (!m) {
+    mctx.font = key; const t = mctx.measureText('Hgjp');
+    m = { asc: t.actualBoundingBoxAscent || st.size * 0.8, desc: t.actualBoundingBoxDescent || st.size * 0.22 };
+    if (metricCache.size > 200) metricCache.clear(); metricCache.set(key, m);
   }
-  el._lines = lines;
-  el.h = Math.max(1, lines.length) * el.size * 1.3 + TEXT_PAD * 2;
+  return m;
+}
+export function layoutText(el) {
+  const doc = textDoc(el), maxW = Math.max(10, el.w - TEXT_PAD * 2), lines = [];
+  for (const para of doc) {
+    const base = para.spans[0] || { size: el.size || 16, color: el.color, font: 'Helvetica' };
+    const tokens = [];
+    for (const sp of para.spans) for (const m of (sp.t.match(/\S+\s*|\s+/g) || [])) tokens.push({ text: m, st: sp });
+    let line = { tokens: [], w: 0, wTrim: 0, align: para.align || 'left', base };
+    const flush = () => { lines.push(line); line = { tokens: [], w: 0, wTrim: 0, align: para.align || 'left', base }; };
+    for (const tk of tokens) {
+      mctx.font = fontString(tk.st);
+      const trimmed = tk.text.replace(/\s+$/, ''), w = mctx.measureText(tk.text).width, wTrim = mctx.measureText(trimmed).width;
+      if (line.tokens.length && line.w + wTrim > maxW) flush();
+      if (wTrim > maxW) {   // a single word wider than the box: break it by characters
+        let piece = '';
+        for (const ch of trimmed) {
+          if (mctx.measureText(piece + ch).width > maxW && piece) { const pw = mctx.measureText(piece).width; line.tokens.push({ text: piece, st: tk.st, x: line.w, w: pw, wTrim: pw }); line.w += pw; line.wTrim = line.w; flush(); piece = ch; }
+          else piece += ch;
+        }
+        const pw = mctx.measureText(piece).width, full = mctx.measureText(piece + tk.text.slice(trimmed.length)).width;
+        line.tokens.push({ text: piece + tk.text.slice(trimmed.length), st: tk.st, x: line.w, w: full, wTrim: pw }); line.wTrim = line.w + pw; line.w += full;
+        continue;
+      }
+      line.tokens.push({ text: tk.text, st: tk.st, x: line.w, w, wTrim }); line.wTrim = line.w + wTrim; line.w += w;
+    }
+    flush();
+  }
+  let y = 0;
+  for (const ln of lines) {
+    const sts = ln.tokens.length ? ln.tokens.map(t => t.st) : [ln.base];
+    let asc = 0, desc = 0, size = 0;
+    for (const st of sts) { const m = metrics(st); asc = Math.max(asc, m.asc); desc = Math.max(desc, m.desc); size = Math.max(size, st.size); }
+    ln.h = size * 1.3; ln.y = y; ln.baseline = y + (ln.h - (asc + desc)) / 2 + asc;
+    ln.offset = ln.align === 'center' ? (maxW - ln.wTrim) / 2 : ln.align === 'right' ? (maxW - ln.wTrim) : 0;
+    y += ln.h;
+  }
+  el._layout = { lines, h: y };
+  el.h = y + TEXT_PAD * 2;
+  el.text = docText(doc);
   return lines;
 }
+export function textLayout(el) { return (el._layout || (layoutText(el), el._layout)); }
 
 /* ---------- images ---------- */
 const imgCache = new Map();
@@ -271,12 +307,17 @@ export function drawElement(ctx, el, env = {}) {
       break;
     }
     case 'text': {
-      const lines = el._lines || layoutText(el);
+      const lay = textLayout(el);
       ctx.save();
       ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
-      ctx.font = `${el.size}px ${FONT}`; ctx.fillStyle = el.color; ctx.textBaseline = 'top';
-      const lh = el.size * 1.3;
-      lines.forEach((ln, i) => ctx.fillText(ln, -el.w / 2 + TEXT_PAD, -el.h / 2 + TEXT_PAD + i * lh));
+      ctx.textBaseline = 'alphabetic';
+      const x0 = -el.w / 2 + TEXT_PAD, y0 = -el.h / 2 + TEXT_PAD;
+      for (const ln of lay.lines) for (const tk of ln.tokens) {
+        ctx.font = fontString(tk.st); ctx.fillStyle = tk.st.color || el.color || '#111827';
+        const x = x0 + ln.offset + tk.x, y = y0 + ln.baseline;
+        ctx.fillText(tk.text, x, y);
+        if (tk.st.u && tk.wTrim > 0) ctx.fillRect(x, y + tk.st.size * 0.12, tk.wTrim, Math.max(0.8, tk.st.size / 14));
+      }
       ctx.restore();
       break;
     }
