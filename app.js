@@ -41,8 +41,9 @@ const S = {
   tool: 'pen', color: COLORS[0], size: 'm',
   pencilOnly: localStorage.getItem('pencilOnly') === '1',
   view: { s: 1, x: 0, y: 0 },
-  sel: [], undo: [], redo: [],
-  editing: null, editBefore: null, editText: '',
+  sel: [],
+  editing: null, editBefore: null, editIsNew: false,
+  thumb: null, thumbDirty: true,
 };
 const page = () => S.nb.pages[S.pi];
 const newPage = template => ({ id: uid(), template, elements: [] });
@@ -51,11 +52,17 @@ const newPage = template => ({ id: uid(), template, elements: [] });
 const canvas = $('#canvas'), stage = $('#stage'), ta = $('#textEdit'), selBar = $('#selBar');
 const ctx = canvas.getContext('2d');
 let dpr = 1, W = 0, H = 0;
+/* Finished ink is drawn once into this offscreen layer; each frame only repaints the live stroke
+   and the selection on top of it. layerDirty forces a rebuild. */
+const layer = document.createElement('canvas'), lctx = layer.getContext('2d');
+let layerDirty = true, layerView = null, wheelTimer = null;
+const cloneEl = el => { const c = {}; for (const k in el) if (k[0] !== '_') c[k] = el[k]; return c; };
+function setSel(arr) { S.sel = arr; layerDirty = true; updateSelBar(); }
 
 function resize() {
   const r = stage.getBoundingClientRect(); W = r.width; H = r.height; dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-  requestRender();
+  layerDirty = true; requestRender();
 }
 new ResizeObserver(resize).observe(stage);
 
@@ -81,16 +88,39 @@ function zoomAt(k, [sx, sy]) {
 /* ---------------- rendering ---------------- */
 let needs = false, gesture = null, nav = null;
 function requestRender() { if (!needs) { needs = true; requestAnimationFrame(render); } }
+function renderLayer() {
+  S._layerRenders = (S._layerRenders || 0) + 1;
+  if (layer.width !== canvas.width || layer.height !== canvas.height) { layer.width = canvas.width; layer.height = canvas.height; }
+  lctx.setTransform(dpr, 0, 0, dpr, 0, 0); lctx.clearRect(0, 0, W, H);
+  lctx.translate(S.view.x, S.view.y); lctx.scale(S.view.s, S.view.s);
+  lctx.fillStyle = 'rgba(0,0,0,.16)'; lctx.fillRect(3 / S.view.s, 4 / S.view.s, R.PAGE_W, R.PAGE_H);   // cheap paper shadow
+  lctx.save(); lctx.beginPath(); lctx.rect(0, 0, R.PAGE_W, R.PAGE_H); lctx.clip();
+  lctx.fillStyle = '#fff'; lctx.fillRect(0, 0, R.PAGE_W, R.PAGE_H);
+  R.drawMarks(lctx, R.templateMarks(page().template));
+  const skip = new Set(S.sel); if (S.editing) skip.add(S.editing);
+  const onImage = () => { layerDirty = true; requestRender(); };
+  for (const el of page().elements) if (!skip.has(el)) R.drawElement(lctx, el, { onImage });
+  lctx.restore();
+  layerView = { ...S.view }; layerDirty = false;
+}
 function render() {
   needs = false;
   if (!S.nb) return;
+  S._renders = (S._renders || 0) + 1;
+  const v = S.view;
+  const same = layerView && v.s === layerView.s && v.x === layerView.x && v.y === layerView.y;
+  if (layerDirty || !layerView || (!same && !nav && !wheelTimer)) renderLayer();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
-  ctx.translate(S.view.x, S.view.y); ctx.scale(S.view.s, S.view.s);
-  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.28)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 4; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, R.PAGE_W, R.PAGE_H); ctx.restore();
+  if (same || layerDirty === false && (v.s === layerView.s && v.x === layerView.x && v.y === layerView.y)) ctx.drawImage(layer, 0, 0, W, H);
+  else {  // mid pan/zoom: reuse the layer, scaled; it is rebuilt sharp when the gesture ends
+    const lv = layerView, k = v.s / lv.s;
+    ctx.save(); ctx.translate(v.x - k * lv.x, v.y - k * lv.y); ctx.scale(k, k); ctx.drawImage(layer, 0, 0, W, H); ctx.restore();
+  }
+  ctx.translate(v.x, v.y); ctx.scale(v.s, v.s);
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, R.PAGE_W, R.PAGE_H); ctx.clip();
-  R.renderPage(ctx, page(), { hideId: S.editing && S.editing.id, onImage: requestRender });
-  if (gesture && (gesture.kind === 'stroke')) R.drawElement(ctx, gesture.el, { live: true });
+  for (const el of S.sel) if (el !== S.editing) R.drawElement(ctx, el, { onImage: requestRender });
+  if (gesture && gesture.kind === 'stroke') R.drawElement(ctx, gesture.el, { live: true });
   if (gesture && gesture.kind === 'shape') R.drawElement(ctx, gesture.el, {});
   ctx.restore();
   if (gesture && gesture.kind === 'lasso' && gesture.pts.length > 1) {
@@ -139,35 +169,66 @@ function drawSelection() {
   ctx.restore();
 }
 
-/* ---------------- history & save ---------------- */
-function pushHistory(snapshot) {
-  S.undo.push({ pi: S.pi, els: snapshot || clone(page().elements) });
-  if (S.undo.length > 60) S.undo.shift();
-  S.redo = [];
-  updateUndoButtons();
+/* ---------------- history (per page, small operations) ---------------- */
+const hist = pg => (pg._hist || (pg._hist = { undo: [], redo: [] }));
+function commit(op) {
+  const h = hist(page()); h.undo.push(op); if (h.undo.length > 500) h.undo.shift(); h.redo = [];
+  if (S.pi === 0) S.thumbDirty = true;
+  layerDirty = true; updateUndoButtons(); saveSoon();
 }
-function undo() { step(S.undo, S.redo); }
-function redo() { step(S.redo, S.undo); }
-function step(from, to) {
-  if (S.editing) finishEdit();
-  const e = from.pop(); if (!e) return;
-  if (e.pi >= S.nb.pages.length) return;
-  to.push({ pi: e.pi, els: clone(S.nb.pages[e.pi].elements) });
-  S.nb.pages[e.pi].elements = e.els; S.pi = e.pi; S.sel = [];
-  updatePageUI(); updateSelBar(); updateUndoButtons(); requestRender(); saveSoon();
+const opAdd = els => ({ t: 'add', items: els.map(el => ({ i: page().elements.indexOf(el), el: cloneEl(el) })) });
+const opRemove = items => ({ t: 'remove', items });          // items in removal order, index at time of removal
+const opModify = (before, after) => ({ t: 'modify', before, after });
+const opReorder = (before, after) => ({ t: 'reorder', before, after });
+/* remove elements one at a time (highest index first) and record where each one was */
+function removeEls(list) {
+  const items = [];
+  const idx = list.map(el => page().elements.indexOf(el)).filter(i => i >= 0).sort((a, b) => b - a);
+  for (const i of idx) { items.push({ i, el: page().elements[i] }); page().elements.splice(i, 1); }
+  return items;
 }
-function updateUndoButtons() { $('#btnUndo').disabled = !S.undo.length; $('#btnRedo').disabled = !S.redo.length; }
+function insertItems(items, reverse) {
+  const arr = page().elements;
+  const list = reverse ? items.slice().reverse() : items;
+  for (const it of list) arr.splice(Math.min(it.i, arr.length), 0, cloneEl(it.el));
+}
+function replaceEls(clones) { const map = new Map(clones.map(c => [c.id, c])); page().elements = page().elements.map(e => map.has(e.id) ? cloneEl(map.get(e.id)) : e); }
+function setOrder(ids) {
+  const map = new Map(page().elements.map(e => [e.id, e]));
+  const ordered = ids.map(id => map.get(id)).filter(Boolean), rest = page().elements.filter(e => !ids.includes(e.id));
+  page().elements = ordered.concat(rest);
+}
+function applyOp(op, forward) {
+  const removeByIds = items => { const ids = new Set(items.map(it => it.el.id)); page().elements = page().elements.filter(e => !ids.has(e.id)); };
+  switch (op.t) {
+    case 'add':     forward ? insertItems(op.items, false) : removeByIds(op.items); break;
+    case 'remove':  forward ? removeByIds(op.items) : insertItems(op.items, true); break;
+    case 'modify':  replaceEls(forward ? op.after : op.before); break;
+    case 'reorder': setOrder(forward ? op.after : op.before); break;
+  }
+}
+function undo() { if (S.editing) finishEdit(); const h = hist(page()); const op = h.undo.pop(); if (!op) return; applyOp(op, false); h.redo.push(op); afterHistory(); }
+function redo() { if (S.editing) finishEdit(); const h = hist(page()); const op = h.redo.pop(); if (!op) return; applyOp(op, true); h.undo.push(op); afterHistory(); }
+function afterHistory() { if (S.pi === 0) S.thumbDirty = true; setSel([]); layerDirty = true; updateUndoButtons(); requestRender(); saveSoon(); }
+function updateUndoButtons() { const h = hist(page()); $('#btnUndo').disabled = !h.undo.length; $('#btnRedo').disabled = !h.redo.length; }
 
+/* ---------------- save ---------------- */
 let saveTimer = null;
-function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 600); }
+function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 1200); }
+function snapshotNotebook() {
+  const nb = S.nb;
+  return { id: nb.id, name: nb.name, created: nb.created, updated: nb.updated, template: nb.template, cover: nb.cover,
+    pages: nb.pages.map(p => ({ id: p.id, template: p.template, elements: p.elements.map(cloneEl) })) };
+}
 async function saveNow() {
   clearTimeout(saveTimer); saveTimer = null;
   if (!S.nb) return;
   S.nb.updated = Date.now();
-  const nb = clone(S.nb);
+  const nb = snapshotNotebook();
   try {
+    if (S.thumbDirty || !S.thumb) { S.thumb = thumbnail(S.nb.pages[0], 160); S.thumbDirty = false; }
     await DB.put('notebooks', nb);
-    await DB.put('meta', { id: nb.id, name: nb.name, updated: nb.updated, created: nb.created, pages: nb.pages.length, template: nb.template, cover: nb.cover, thumb: thumbnail(S.nb.pages[0], 160) });
+    await DB.put('meta', { id: nb.id, name: nb.name, updated: nb.updated, created: nb.created, pages: nb.pages.length, template: nb.template, cover: nb.cover, thumb: S.thumb });
   } catch (e) { console.error(e); toast('Could not save: ' + e.message); }
 }
 function thumbnail(pg, w) {
@@ -206,7 +267,8 @@ function onMove(e) {
     if (nav && nav.kind === 'pan') { const p = stagePt(e); S.view.x = nav.vx + p[0] - nav.x; S.view.y = nav.vy + p[1] - nav.y; clampView(); requestRender(); return; }
   }
   if (!gesture || gesture.pointerId !== e.pointerId) return;
-  const evs = (gesture.kind === 'stroke' && e.getCoalescedEvents) ? e.getCoalescedEvents() : [e];
+  let evs = [e];
+  if (gesture.kind === 'stroke' && e.getCoalescedEvents) { const co = e.getCoalescedEvents(); if (co.length) evs = co; }
   for (const ev of evs) moveGesture(ev);
 }
 function onUp(e) {
@@ -216,6 +278,7 @@ function onUp(e) {
       if (pointers.size === 1 && S.pencilOnly) { const p = [...pointers.values()][0]; nav = { kind: 'pan', x: p[0], y: p[1], vx: S.view.x, vy: S.view.y }; }
       else if (pointers.size < 2) nav = null;
     }
+    if (!nav) requestRender();
   }
   if (gesture && gesture.pointerId === e.pointerId) endGesture(e);
 }
@@ -232,6 +295,7 @@ function pinchMove() {
 }
 stage.addEventListener('wheel', e => {
   e.preventDefault();
+  clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { wheelTimer = null; requestRender(); }, 120);
   if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), stagePt(e));
   else { S.view.x -= e.deltaX; S.view.y -= e.deltaY; clampView(); requestRender(); }
 }, { passive: false });
@@ -246,7 +310,7 @@ function startGesture(e) {
         size: S.tool === 'pen' ? R.PEN_SIZES[S.size] : R.HL_SIZES[S.size], sim: e.pointerType !== 'pen', points: [[p[0], p[1], pressureOf(e)]] } };
       break;
     case 'eraser':
-      gesture = { kind: 'erase', pointerId: id, removed: false }; eraseAt(p); break;
+      gesture = { kind: 'erase', pointerId: id, removed: [] }; eraseAt(p); break;
     case 'rect': case 'ellipse': case 'line': case 'arrow':
       gesture = { kind: 'shape', pointerId: id, start: p, el: { type: 'shape', id: uid(), kind: S.tool, cx: p[0], cy: p[1], w: 0, h: 0, rot: 0,
         color: S.color, width: R.SHAPE_WIDTHS[S.size], fill: 'none' } };
@@ -261,19 +325,18 @@ function selectDown(e, p) {
   const f = selFrame();
   if (f) {
     const h = hitHandle(f, stagePt(e));
-    if (h) { gesture = { kind: 'handle', pointerId: e.pointerId, handle: h, f, start: p, els: S.sel.slice(), snap: S.sel.map(clone), before: clone(page().elements), moved: false }; return; }
+    if (h) { gesture = { kind: 'handle', pointerId: e.pointerId, handle: h, f, start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), moved: false }; return; }
   }
   const hit = hitTest(p);
   if (hit) {
     const now = performance.now();
-    if (hit.type === 'text' && lastTap && lastTap.el === hit && now - lastTap.t < 450) { lastTap = null; S.sel = [hit]; startEdit(hit); return; }
+    if (hit.type === 'text' && lastTap && lastTap.el === hit && now - lastTap.t < 450) { lastTap = null; setSel([hit]); startEdit(hit); return; }
     lastTap = { el: hit, t: now };
-    if (!S.sel.includes(hit)) S.sel = [hit];
-    gesture = { kind: 'move', pointerId: e.pointerId, start: p, els: S.sel.slice(), snap: S.sel.map(clone), before: clone(page().elements), moved: false };
+    if (!S.sel.includes(hit)) setSel([hit]);
+    gesture = { kind: 'move', pointerId: e.pointerId, start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), moved: false };
   } else {
-    S.sel = []; gesture = { kind: 'lasso', pointerId: e.pointerId, pts: [p] };
+    setSel([]); gesture = { kind: 'lasso', pointerId: e.pointerId, pts: [p] };
   }
-  updateSelBar();
 }
 function hitTest(p) {
   const tol = 7 / S.view.s, els = page().elements;
@@ -287,7 +350,11 @@ function hitHandle(f, sp) {
 function moveGesture(ev) {
   const g = gesture, p = evPage(ev);
   switch (g.kind) {
-    case 'stroke': g.el.points.push([p[0], p[1], pressureOf(ev)]); break;
+    case 'stroke': {
+      const pts = g.el.points, last = pts[pts.length - 1];
+      if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= 0.35) pts.push([p[0], p[1], pressureOf(ev)]);
+      break;
+    }
     case 'erase': eraseAt(p); break;
     case 'shape': {
       const [sx, sy] = g.start, dx = p[0] - sx, dy = p[1] - sy, el = g.el;
@@ -311,21 +378,24 @@ function endGesture() {
     case 'stroke': {
       const el = g.el;
       if (el.points.length === 1) el.points.push([el.points[0][0] + 0.3, el.points[0][1] + 0.3, el.points[0][2]]);
-      pushHistory(); page().elements.push(el); saveSoon(); break;
+      page().elements.push(el); commit(opAdd([el])); break;
     }
+    case 'erase':
+      if (g.removed.length) commit(opRemove(g.removed));
+      break;
     case 'shape': {
       const el = g.el;
       if (el.w < 4 && el.h < 4) { if (isLineEl(el)) { el.w = 140; el.rot = 0; el.cx = g.start[0] + 70; } else { el.w = 140; el.h = 90; el.cx = g.start[0] + 70; el.cy = g.start[1] + 45; } }
-      pushHistory(); page().elements.push(el); S.sel = [el]; setTool('select'); saveSoon(); break;
+      page().elements.push(el); setTool('select'); setSel([el]); commit(opAdd([el])); break;
     }
     case 'move': case 'handle':
-      if (g.moved) { pushHistory(g.before); saveSoon(); }
+      if (g.moved) commit(opModify(g.snap, g.els.map(cloneEl)));
       break;
     case 'lasso':
-      if (g.pts.length >= 3) S.sel = page().elements.filter(el => R.elementInLasso(el, g.pts));
+      if (g.pts.length >= 3) setSel(page().elements.filter(el => R.elementInLasso(el, g.pts)));
       break;
   }
-  updateSelBar(); requestRender();
+  requestRender();
 }
 function cancelGesture() {
   const g = gesture; gesture = null; if (!g) return;
@@ -336,10 +406,10 @@ function eraseAt(p) {
   const tol = Math.max(8 / S.view.s, 3), els = page().elements;
   const gone = els.filter(el => el.type === 'stroke' && R.hitElement(el, p, tol));
   if (!gone.length) return;
-  if (gesture && !gesture.removed) { pushHistory(); gesture.removed = true; }
-  page().elements = els.filter(el => !gone.includes(el));
-  S.sel = S.sel.filter(el => !gone.includes(el));
-  saveSoon();
+  const items = removeEls(gone);
+  if (gesture && gesture.kind === 'erase') gesture.removed.push(...items);
+  if (S.sel.some(el => gone.includes(el))) setSel(S.sel.filter(el => !gone.includes(el)));
+  layerDirty = true;
 }
 
 /* ---------------- transforms ---------------- */
@@ -431,7 +501,11 @@ function positionSelBar() {
   if (top < 6) top = toScreen([b.x1, b.y1])[1] + 14;
   selBar.style.left = clamp(left, 6, Math.max(6, W - bw - 6)) + 'px'; selBar.style.top = clamp(top, 6, Math.max(6, H - bh - 6)) + 'px';
 }
-function mutateSel(fn) { pushHistory(); S.sel.forEach(fn); S.sel.forEach(e => e.type === 'text' && R.layoutText(e)); saveSoon(); requestRender(); }
+function mutateSel(fn) {
+  const before = S.sel.map(cloneEl);
+  S.sel.forEach(fn); S.sel.forEach(e => e.type === 'text' && R.layoutText(e));
+  commit(opModify(before, S.sel.map(cloneEl))); requestRender();
+}
 function resizeSel(k) {
   mutateSel(e => {
     if (e.type === 'stroke') e.size *= k;
@@ -440,29 +514,28 @@ function resizeSel(k) {
   });
 }
 function duplicateSel() {
-  pushHistory();
-  const copies = S.sel.map(e => { const c = clone(e); c.id = uid(); translateEl(c, clone(e), 18, 18); return c; });
-  page().elements.push(...copies); S.sel = copies; updateSelBar(); saveSoon(); requestRender();
+  const copies = S.sel.map(e => { const c = cloneEl(e); c.id = uid(); translateEl(c, c, 18, 18); return c; });
+  page().elements.push(...copies); setSel(copies); commit(opAdd(copies)); requestRender();
 }
 function reorderSel(front) {
-  pushHistory();
+  const before = page().elements.map(e => e.id);
   const rest = page().elements.filter(e => !S.sel.includes(e));
-  page().elements = front ? rest.concat(S.sel) : S.sel.concat(rest); saveSoon(); requestRender();
+  page().elements = front ? rest.concat(S.sel) : S.sel.concat(rest);
+  commit(opReorder(before, page().elements.map(e => e.id))); requestRender();
 }
 function deleteSel() {
   if (!S.sel.length) return;
-  pushHistory(); page().elements = page().elements.filter(e => !S.sel.includes(e)); S.sel = []; updateSelBar(); saveSoon(); requestRender();
+  const items = removeEls(S.sel); setSel([]); commit(opRemove(items)); requestRender();
 }
 
 /* ---------------- text editing ---------------- */
 function createText(p) {
-  const before = clone(page().elements);
   const el = { type: 'text', id: uid(), cx: p[0] + 100, cy: p[1], w: 200, h: 30, rot: 0, text: '', size: R.TEXT_SIZES[S.size], color: S.color };
   R.layoutText(el); el.cy = p[1] + el.h / 2;
-  page().elements.push(el); S.sel = [el]; setTool('select'); startEdit(el, before);
+  page().elements.push(el); setTool('select'); setSel([el]); startEdit(el, true);
 }
-function startEdit(el, before) {
-  S.editing = el; S.editBefore = before || clone(page().elements); S.editText = el.text;
+function startEdit(el, isNew) {
+  S.editing = el; S.editBefore = cloneEl(el); S.editIsNew = !!isNew; layerDirty = true;
   ta.hidden = false; ta.value = el.text; positionTA(); updateSelBar(); requestRender();
   // focus synchronously: iPadOS only shows the keyboard when focus happens inside the tap handler
   ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch {}
@@ -478,13 +551,13 @@ ta.addEventListener('blur', () => setTimeout(() => { if (S.editing && document.a
 ta.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); finishEdit(); } });
 function finishEdit() {
   const el = S.editing; if (!el) return;
-  S.editing = null; ta.hidden = true;
-  const before = S.editBefore; S.editBefore = null;
-  // if the element was removed meanwhile (undo), nothing to do
+  S.editing = null; ta.hidden = true; layerDirty = true;
+  const before = S.editBefore, isNew = S.editIsNew; S.editBefore = null; S.editIsNew = false;
   if (!page().elements.includes(el)) { updateSelBar(); requestRender(); return; }
-  if (!el.text.trim()) { page().elements = page().elements.filter(e => e !== el); S.sel = []; }
-  else if (el.text !== S.editText || !before.some(e => e.id === el.id)) pushHistory(before);
-  saveSoon(); updateSelBar(); requestRender();
+  if (!el.text.trim()) { removeEls([el]); setSel([]); saveSoon(); }
+  else if (isNew) commit(opAdd([el]));
+  else if (el.text !== before.text) commit(opModify([before], [cloneEl(el)]));
+  updateSelBar(); requestRender();
 }
 
 /* ---------------- inserts: image & link ---------------- */
@@ -497,7 +570,7 @@ $('#fileImage').onchange = async e => {
     const maxW = R.PAGE_W * 0.6, k = Math.min(1, maxW / img.naturalWidth, (R.PAGE_H * 0.6) / img.naturalHeight);
     const c = toPage([W / 2, H / 2]);
     const el = { type: 'image', id: uid(), src, cx: clamp(c[0], 0, R.PAGE_W), cy: clamp(c[1], 0, R.PAGE_H), w: img.naturalWidth * k, h: img.naturalHeight * k, rot: 0 };
-    pushHistory(); page().elements.push(el); S.sel = [el]; setTool('select'); updateSelBar(); saveSoon(); requestRender();
+    page().elements.push(el); setTool('select'); setSel([el]); commit(opAdd([el])); requestRender();
   } catch (err) { toast('Could not add that photo.'); console.error(err); }
 };
 function fileToDataURL(file, max) {
@@ -520,7 +593,7 @@ $('#dlgLink').addEventListener('close', () => {
   if (!/^[a-z]+:\/\//i.test(url)) url = 'https://' + url;
   const c = toPage([W / 2, H / 2]);
   const el = { type: 'link', id: uid(), url, title: $('#linkTitle').value.trim(), cx: clamp(c[0], 120, R.PAGE_W - 120), cy: clamp(c[1], 24, R.PAGE_H - 24), w: 240, h: 48, rot: 0 };
-  pushHistory(); page().elements.push(el); S.sel = [el]; setTool('select'); updateSelBar(); saveSoon(); requestRender();
+  page().elements.push(el); setTool('select'); setSel([el]); commit(opAdd([el])); requestRender();
 });
 
 /* ---------------- toolbar ---------------- */
@@ -529,7 +602,7 @@ function setTool(t) {
   S.tool = t;
   $$('.tool[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   canvas.classList.toggle('sel', t === 'select');
-  if (t !== 'select' && S.sel.length) { S.sel = []; updateSelBar(); requestRender(); }
+  if (t !== 'select' && S.sel.length) { setSel([]); requestRender(); }
 }
 $$('.tool[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
 
@@ -555,13 +628,13 @@ document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (e.key === 'Backspace' || e.key === 'Delete') { if (S.sel.length) { e.preventDefault(); deleteSel(); } }
-  else if (e.key === 'Escape') { S.sel = []; updateSelBar(); requestRender(); }
+  else if (e.key === 'Escape') { setSel([]); requestRender(); }
 });
 
 /* ---------------- pages ---------------- */
 function goPage(i) {
   if (S.editing) finishEdit();
-  S.pi = clamp(i, 0, S.nb.pages.length - 1); S.sel = []; updateSelBar(); updatePageUI(); requestRender();
+  S.pi = clamp(i, 0, S.nb.pages.length - 1); setSel([]); layerDirty = true; updatePageUI(); updateUndoButtons(); requestRender();
 }
 function updatePageUI() {
   $('#btnPageNo').textContent = `${S.pi + 1} / ${S.nb.pages.length}`;
@@ -574,13 +647,13 @@ $('#btnNext').onclick = () => goPage(S.pi + 1);
 $('#btnAddPage').onclick = addPage;
 function addPage() {
   if (S.editing) finishEdit();
-  S.nb.pages.splice(S.pi + 1, 0, newPage(page().template)); S.undo = []; S.redo = []; updateUndoButtons();
+  S.nb.pages.splice(S.pi + 1, 0, newPage(page().template));
   goPage(S.pi + 1); saveSoon(); toast(`Page ${S.pi + 1} added`);
 }
 function deletePage() {
   if (S.nb.pages.length <= 1) { toast('A notebook needs at least one page.'); return; }
   if (!confirm(`Delete page ${S.pi + 1}? This cannot be undone.`)) return;
-  S.nb.pages.splice(S.pi, 1); S.undo = []; S.redo = []; updateUndoButtons(); goPage(S.pi); saveSoon();
+  S.nb.pages.splice(S.pi, 1); S.thumbDirty = true; goPage(S.pi); saveSoon();
 }
 $('#btnPageNo').onclick = () => { $('#pageStrip').hidden = !$('#pageStrip').hidden; if (!$('#pageStrip').hidden) renderThumbs(); };
 $('#btnStripClose').onclick = () => { $('#pageStrip').hidden = true; };
@@ -671,7 +744,7 @@ $('#dlgPaper').addEventListener('close', () => {
   if ($('#dlgPaper').returnValue !== 'ok') return;
   if ($('#paperAll').checked) { S.nb.pages.forEach(p => p.template = paperChoice); S.nb.template = paperChoice; }
   else page().template = paperChoice;
-  saveSoon(); requestRender(); if (!$('#pageStrip').hidden) renderThumbs();
+  layerDirty = true; S.thumbDirty = true; saveSoon(); requestRender(); if (!$('#pageStrip').hidden) renderThumbs();
 });
 
 /* ---------------- home ---------------- */
@@ -711,7 +784,7 @@ $('#btnHelp').onclick = () => $('#dlgHelp').showModal();
 
 async function showHome() {
   if (S.nb) { if (S.editing) finishEdit(); await saveNow(); }
-  S.nb = null; S.sel = []; S.undo = []; S.redo = [];
+  S.nb = null; S.sel = [];
   $('#editor').hidden = true; $('#home').hidden = false; $('#pageStrip').hidden = true;
   S.metas = (await DB.all('meta')).sort((a, b) => b.updated - a.updated);
   const cards = $('#cards'); cards.innerHTML = '';
@@ -729,9 +802,9 @@ async function showHome() {
   }
 }
 async function openNotebook(nb, isNew) {
-  S.nb = nb; S.pi = 0; S.sel = []; S.undo = []; S.redo = []; updateUndoButtons();
+  S.nb = nb; S.pi = 0; S.sel = []; S.thumb = null; S.thumbDirty = true; layerDirty = true;
   $('#home').hidden = true; $('#editor').hidden = false;
-  resize(); fitView(); updatePageUI(); updateSelBar();
+  resize(); fitView(); updatePageUI(); updateUndoButtons(); updateSelBar();
   if (isNew) await saveNow();
   requestRender();
 }
@@ -745,6 +818,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && S.n
 window.addEventListener('pagehide', () => { if (S.nb) saveNow(); });
 
 /* ---------------- boot ---------------- */
+window.__nb = () => S;   // debug hook: inspect state from the console
 (async function boot() {
   setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly);
   try { await DB.open(); } catch (e) { alert('This browser cannot store notebooks (private mode?). ' + e.message); }
