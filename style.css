@@ -49,6 +49,25 @@ button { font: inherit; color: inherit; }
 .card .sub { color: var(--muted); font-size: 12px; }
 .empty { text-align: center; color: var(--muted); margin-top: 20vh; }
 
+/* ---- body: stage + tools, dockable ---- */
+#body { flex: 1; display: flex; flex-direction: column; position: relative; min-height: 0; }
+body.dock-top #body { flex-direction: column-reverse; }
+body.dock-left #body { flex-direction: row-reverse; }
+body.dock-right #body { flex-direction: row; }
+body.dock-top #tools { border-top: 0; border-bottom: 1px solid var(--line); padding: 4px 8px; }
+body.dock-left #tools, body.dock-right #tools { flex-direction: row; align-items: flex-start; padding: 8px 4px; border-top: 0; height: 100%; box-sizing: border-box; }
+body.dock-left #tools { border-right: 1px solid var(--line); }
+body.dock-right #tools { border-left: 1px solid var(--line); }
+body.dock-left .row, body.dock-right .row { flex-direction: column; overflow-y: auto; overflow-x: hidden; gap: 6px; max-height: 100%; align-items: center; }
+body.dock-left .sep, body.dock-right .sep { width: 28px; height: 1px; margin: 2px 0; }
+body.dock-left .swatches, body.dock-right .swatches, body.dock-left .sizes, body.dock-right .sizes { flex-direction: column; }
+body.dock-left .toggle .lbl, body.dock-right .toggle .lbl { display: none; }
+body.dock-left .spacer, body.dock-right .spacer { display: none; }
+body.dock-left .tool, body.dock-right .tool { min-width: 52px; }
+#toolGrip { color: var(--muted); font-size: 20px; line-height: 1; padding: 6px 8px; cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; align-self: center; border-radius: 8px; }
+#toolGrip:active { background: #ece6d9; cursor: grabbing; }
+#dockHint { position: absolute; background: rgba(37,99,235,.14); border: 2px dashed var(--accent); border-radius: 10px; z-index: 30; pointer-events: none; }
+
 /* ---- stage ---- */
 #stage { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
 #canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; display: block;

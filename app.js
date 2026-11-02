@@ -257,8 +257,8 @@ function thumbnail(pg, w) {
 
 /* ---------------- pointer input ---------------- */
 const pointers = new Map();
-let lastPenTime = -1e9;   // last time the Apple Pencil touched or hovered: hand contacts near that moment are ignored
-const PEN_GRACE_MS = 600;
+let lastPenTime = -1e9;   // last time the Apple Pencil was in contact (hovering does not count): hand contacts near that moment are ignored
+const PEN_GRACE_MS = 350;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 /* iPad Safari runs its own double-tap-zoom / text-selection / loupe gesture detectors on raw touches, and a Pencil
    touch that arrives quickly after the previous stroke gets held by them and never reaches us as a pointerdown.
@@ -300,7 +300,7 @@ function onDown(e) {
   if (gesture) gesture.pen = e.pointerType !== 'touch';
 }
 function onMove(e) {
-  if (e.pointerType === 'pen') lastPenTime = performance.now();
+  if (e.pointerType === 'pen' && (e.buttons & 1)) lastPenTime = performance.now();
   if (e.pointerType === 'touch' && pointers.has(e.pointerId)) {
     pointers.set(e.pointerId, stagePt(e));
     if (nav && nav.kind === 'pinch') { pinchMove(); return; }
@@ -519,7 +519,14 @@ function moveGesture(ev) {
       if (S.snap) { if (!g.T) g.T = snapTargets(new Set()); g.guides = []; p = isLineEl(g.el) ? snapLineEnd(g.start, p, g.T, g.guides) : snapPoint(p, g.T, g.guides); }
       const [sx, sy] = g.start, dx = p[0] - sx, dy = p[1] - sy, el = g.el;
       if (el.kind === 'line' || el.kind === 'arrow') { el.pts = [[sx, sy], [p[0], p[1]]]; R.syncLine(el); }
-      else { el.cx = sx + dx / 2; el.cy = sy + dy / 2; el.w = Math.abs(dx); el.h = Math.abs(dy); }
+      else {
+        let w = Math.abs(dx), h = Math.abs(dy);
+        if (S.snap && w > 6 && h > 6 && !(g.guides || []).some(x => x.k === 'pt') && Math.abs(w - h) < Math.max(8 / S.view.s, 0.12 * Math.max(w, h))) {
+          w = h = Math.max(w, h);   // lock to a perfect square / circle
+          (g.guides || (g.guides = [])).push({ k: 'label', p: [sx + Math.sign(dx || 1) * w, sy + Math.sign(dy || 1) * h], text: el.kind === 'rect' ? 'square' : 'circle' });
+        }
+        el.cx = sx + Math.sign(dx || 1) * w / 2; el.cy = sy + Math.sign(dy || 1) * h / 2; el.w = w; el.h = h;
+      }
       break;
     }
     case 'move': {
@@ -679,6 +686,7 @@ function drawGuides() {
   ctx.save(); ctx.strokeStyle = '#e11d48'; ctx.lineWidth = 1 / s;
   for (const gd of g.guides) {
     if (gd.k === 'pt') { ctx.setLineDash([]); ctx.lineWidth = 1.5 / s; ctx.beginPath(); ctx.arc(gd.p[0], gd.p[1], 6 / s, 0, Math.PI * 2); ctx.stroke(); continue; }
+    if (gd.k === 'label') { ctx.setLineDash([]); ctx.fillStyle = '#e11d48'; ctx.font = `bold ${11 / s}px Helvetica, Arial, sans-serif`; ctx.textBaseline = 'bottom'; ctx.fillText(gd.text, gd.p[0] + 12 / s, gd.p[1] - 8 / s); continue; }
     if (gd.k === 'ang') {
       const dx = gd.b[0] - gd.a[0], dy = gd.b[1] - gd.a[1], len = Math.hypot(dx, dy) || 1, ex = dx / len * 40 / s, ey = dy / len * 40 / s;
       ctx.setLineDash([4 / s, 3 / s]); ctx.lineWidth = 1 / s; ctx.beginPath(); ctx.moveTo(gd.a[0] - ex, gd.a[1] - ey); ctx.lineTo(gd.b[0] + ex, gd.b[1] + ey); ctx.stroke();
@@ -738,6 +746,10 @@ function applyHandle(p) {
     let nw = Math.max(8, (local[0] - anchorL[0]) * sign[0]), nh = Math.max(8, (local[1] - anchorL[1]) * sign[1]);
     if (el.type === 'image') { const k = Math.max(nw / s.w, nh / s.h); nw = s.w * k; nh = s.h * k; }
     if (el.type === 'text' || el.type === 'link') nh = s.h;
+    if (S.snap && el.type === 'shape' && (el.kind === 'rect' || el.kind === 'ellipse') && Math.abs(nw - nh) < Math.max(8 / S.view.s, 0.12 * Math.max(nw, nh))) {
+      nw = nh = Math.max(nw, nh);
+      (g.guides || (g.guides = [])).push({ k: 'label', p: p, text: el.kind === 'rect' ? 'square' : 'circle' });
+    }
     [el.cx, el.cy] = R.fromLocal(f, [anchorL[0] + sign[0] * nw / 2, anchorL[1] + sign[1] * nh / 2]);
     el.w = nw; el.h = nh;
     if (el.type === 'text') { R.layoutText(el); [el.cx, el.cy] = R.fromLocal(f, [anchorL[0] + sign[0] * nw / 2, anchorL[1] + sign[1] * el.h / 2]); }
@@ -1022,6 +1034,41 @@ $$('#sizes button').forEach(b => b.onclick = () => setSize(b.dataset.size));
 function setSize(s) { S.size = s; $$('#sizes button').forEach(b => b.classList.toggle('on', b.dataset.size === s)); }
 
 function setPencilOnly(v) { S.pencilOnly = v; localStorage.setItem('pencilOnly', v ? '1' : '0'); $('#btnPencilOnly').classList.toggle('on', v); }
+/* toolbar docking: drag the grip toward an edge */
+const DOCKS = ['bottom', 'top', 'left', 'right'];
+function setDock(d) {
+  if (!DOCKS.includes(d)) d = 'bottom';
+  S.dock = d; localStorage.setItem('dock', d);
+  document.body.classList.remove(...DOCKS.map(x => 'dock-' + x)); document.body.classList.add('dock-' + d);
+  requestRender();
+}
+$('#toolGrip').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const grip = e.target, hint = $('#dockHint'), body = $('#body');
+  let target = S.dock, moved = false;
+  try { grip.setPointerCapture(e.pointerId); } catch {}
+  const edgeFor = ev => {
+    const r = body.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+    const d = { left: x, right: r.width - x, top: y, bottom: r.height - y };
+    return Object.keys(d).sort((a, b) => d[a] - d[b])[0];
+  };
+  const move = ev => {
+    if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) > 8) moved = true;
+    if (!moved) return;
+    target = edgeFor(ev);
+    const r = body.getBoundingClientRect(), t = 110;
+    hint.hidden = false;
+    Object.assign(hint.style, target === 'top' ? { left: '0', top: '0', width: r.width + 'px', height: t + 'px' } :
+      target === 'bottom' ? { left: '0', top: (r.height - t) + 'px', width: r.width + 'px', height: t + 'px' } :
+      target === 'left' ? { left: '0', top: '0', width: t + 'px', height: r.height + 'px' } : { left: (r.width - t) + 'px', top: '0', width: t + 'px', height: r.height + 'px' });
+  };
+  const up = () => {
+    grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up); grip.removeEventListener('pointercancel', up);
+    hint.hidden = true;
+    if (moved && target !== S.dock) { setDock(target); toast(`Toolbar moved to the ${target}.`); }
+  };
+  grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
+});
 function setSnap(v) { S.snap = v; localStorage.setItem('snap', v ? '1' : '0'); $('#btnSnap').classList.toggle('on', v); }
 $('#btnSnap').onclick = () => { setSnap(!S.snap); toast(S.snap ? 'Snapping on: ends and edges line up with nearby shapes.' : 'Snapping off.'); };
 $('#btnPencilOnly').onclick = () => { setPencilOnly(!S.pencilOnly); toast(S.pencilOnly ? 'Pencil only: fingers scroll and zoom.' : 'Fingers can draw now. Use two fingers to zoom.'); };
@@ -1303,7 +1350,7 @@ window.addEventListener('pagehide', () => { if (S.nb) saveNow(); });
 /* ---------------- boot ---------------- */
 window.__nb = () => S;   // debug hook: inspect state from the console
 (async function boot() {
-  setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly); setSnap(S.snap);
+  setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly); setSnap(S.snap); setDock(localStorage.getItem('dock') || 'bottom');
   try { await DB.open(); } catch (e) { alert('This browser cannot store notebooks (private mode?). ' + e.message); }
   await showHome();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});

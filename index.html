@@ -51,6 +51,7 @@
     <button id="btnMenu" class="btn icon" title="Menu" aria-label="Menu">⋯</button>
   </header>
 
+  <div id="body">
   <div id="stage">
     <canvas id="canvas"></canvas>
     <div id="textEdit" contenteditable="true" hidden spellcheck="true" autocapitalize="sentences"></div>
@@ -108,8 +109,11 @@
       <button id="btnPencilOnly" class="toggle" title="When on, only the Apple Pencil draws; fingers scroll and zoom.">
         <span class="dot"></span><span class="lbl">Pencil only</span></button>
       <button id="btnFit" class="btn small" title="Fit page to screen">Fit</button>
+      <div id="toolGrip" title="Drag me to the top, left or right edge to move the toolbar">⠿</div>
     </div>
   </footer>
+  <div id="dockHint" hidden></div>
+  </div>
   <input type="file" id="fileImage" accept="image/*" hidden>
 </section>
 
@@ -187,6 +191,8 @@
       <li><b>Photo</b> and <b>Link</b> insert in the middle of the view. Select a link and tap Open to visit it.</li>
       <li><b>Pages</b>: use ‹ › at the top, <b>+ Page</b> to add one, or tap the page number to open the page list. There you can move a page with ▲ ▼ (or hold a thumbnail and drag it), duplicate it, copy it to another notebook, or delete it.</li>
       <li><b>Export</b> from the ⋯ menu. Choose Google Drive in the share sheet to send a PDF to Claude.</li>
+      <li><b>Toolbar</b>: drag the ⠿ grip at its end toward the top, left or right edge of the page to dock the toolbar there. Pinch with two fingers to zoom in for detail work; <b>Fit</b> brings the whole page back.</li>
+      <li><b>Squares and circles</b>: with Snap on, a box or oval whose sides are nearly equal locks to a perfect square or circle while you draw or resize it.</li>
       <li>Everything is saved on this device automatically and works with no internet. Add the app to your Home Screen from Safari’s Share menu.</li>
     </ul>
     <div class="actions"><button value="ok" class="btn primary">Got it</button></div>
