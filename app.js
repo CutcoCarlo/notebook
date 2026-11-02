@@ -335,9 +335,97 @@ function startGesture(e) {
       break;
     }
     case 'text': createText(p); break;
+    case 'bucket': bucketFill(p); break;
     case 'select': selectDown(e, p); break;
   }
   requestRender();
+}
+
+/* ---------------- paint bucket ----------------
+   Rasterise every barrier (pen ink, shape outlines, lines, photos) at FILL_SCALE px per point, widened by
+   GAP_PT so small gaps close, flood-fill from the tapped pixel, grow the region back by GAP_PT so it tucks
+   under the lines, and store it as a bitmap mask element placed underneath the ink. */
+const FILL_SCALE = 3, GAP_PT = 4;
+function drawBarrier(c, el, extra) {
+  c.strokeStyle = '#000'; c.fillStyle = '#000'; c.lineCap = 'round'; c.lineJoin = 'round';
+  switch (el.type) {
+    case 'stroke':
+      if (el.tool === 'highlighter') return;
+      { const path = R.strokePath(el); c.fill(path); c.lineWidth = extra * 2; c.stroke(path); }
+      return;
+    case 'image':
+      c.save(); c.translate(el.cx, el.cy); c.rotate(el.rot || 0); c.fillRect(-el.w / 2 - extra, -el.h / 2 - extra, el.w + 2 * extra, el.h + 2 * extra); c.restore();
+      return;
+    case 'shape':
+      if (isLineEl(el)) {
+        const pts = R.linePts(el);
+        c.lineWidth = el.width + extra * 2; c.beginPath(); R.tracePath(c, R.curveSegments(pts)); c.stroke();
+        if (el.kind === 'arrow') { const hs = R.arrowHead(el), tip = pts[pts.length - 1], [dx, dy] = R.endDirection(pts);
+          c.beginPath(); c.moveTo(tip[0], tip[1]); c.lineTo(tip[0] - dx * hs - dy * hs * 0.45, tip[1] - dy * hs + dx * hs * 0.45); c.lineTo(tip[0] - dx * hs + dy * hs * 0.45, tip[1] - dy * hs - dx * hs * 0.45); c.closePath(); c.fill(); c.lineWidth = extra * 2; c.stroke(); }
+        return;
+      }
+      c.save(); c.translate(el.cx, el.cy); c.rotate(el.rot || 0); c.lineWidth = el.width + extra * 2; c.beginPath();
+      if (el.kind === 'rect') c.rect(-el.w / 2, -el.h / 2, el.w, el.h); else c.ellipse(0, 0, Math.max(0.1, el.w / 2), Math.max(0.1, el.h / 2), 0, 0, Math.PI * 2);
+      c.stroke(); c.restore();
+      return;
+  }
+}
+async function bucketFill(p) {
+  if (p[0] < 0 || p[1] < 0 || p[0] > R.PAGE_W || p[1] > R.PAGE_H) return;
+  // tapping an existing fill recolours it
+  for (const f of page().elements) if (f.type === 'fill') await R.imageReady(f.mask);
+  const old = page().elements.slice().reverse().find(e => e.type === 'fill' && R.hitElement(e, p, 0));
+  if (old) {
+    if (old.color === S.color) return;
+    const before = cloneEl(old); old.color = S.color; commit(opModify([before], [cloneEl(old)])); requestRender(); return;
+  }
+  toast('Filling…'); await new Promise(r => setTimeout(r, 30));
+  const W = R.PAGE_W * FILL_SCALE, H = R.PAGE_H * FILL_SCALE;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  c.fillStyle = '#fff'; c.fillRect(0, 0, W, H); c.scale(FILL_SCALE, FILL_SCALE);
+  for (const el of page().elements) drawBarrier(c, el, GAP_PT);
+  const data = c.getImageData(0, 0, W, H).data;
+  const open = i => data[i * 4] >= 128;
+  const sx = Math.min(W - 1, Math.floor(p[0] * FILL_SCALE)), sy = Math.min(H - 1, Math.floor(p[1] * FILL_SCALE));
+  if (!open(sy * W + sx)) { toast('Tap inside an empty area to fill it.'); return; }
+  const region = new Uint8Array(W * H), stack = [sy * W + sx]; region[sy * W + sx] = 1;
+  let minx = sx, maxx = sx, miny = sy, maxy = sy, leaked = false;
+  while (stack.length) {
+    const i = stack.pop(), x = i % W, y = (i - x) / W;
+    if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+    if (x === 0 || y === 0 || x === W - 1 || y === H - 1) leaked = true;
+    if (x > 0 && !region[i - 1] && open(i - 1)) { region[i - 1] = 1; stack.push(i - 1); }
+    if (x < W - 1 && !region[i + 1] && open(i + 1)) { region[i + 1] = 1; stack.push(i + 1); }
+    if (y > 0 && !region[i - W] && open(i - W)) { region[i - W] = 1; stack.push(i - W); }
+    if (y < H - 1 && !region[i + W] && open(i + W)) { region[i + W] = 1; stack.push(i + W); }
+  }
+  if (leaked) { toast('That area isn’t closed, so the colour would spill across the page. Close the gap (Snap helps) and try again.'); return; }
+  // grow the region back so it reaches under the lines (barriers were widened by GAP_PT)
+  const r = Math.round(GAP_PT * FILL_SCALE);
+  const bx0 = Math.max(0, minx - r), by0 = Math.max(0, miny - r), bx1 = Math.min(W - 1, maxx + r), by1 = Math.min(H - 1, maxy + r);
+  let cur = region;
+  for (let k = 0; k < r; k++) {
+    const next = new Uint8Array(cur);
+    for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+      const i = y * W + x; if (cur[i]) continue;
+      if ((x > 0 && cur[i - 1]) || (x < W - 1 && cur[i + 1]) || (y > 0 && cur[i - W]) || (y < H - 1 && cur[i + W])) next[i] = 1;
+    }
+    cur = next;
+  }
+  const bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+  const out = document.createElement('canvas'); out.width = bw; out.height = bh;
+  const oc = out.getContext('2d'), id = oc.createImageData(bw, bh), od = id.data;
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    if (cur[(by0 + y) * W + bx0 + x]) { const o = (y * bw + x) * 4; od[o] = od[o + 1] = od[o + 2] = 255; od[o + 3] = 255; }
+  }
+  oc.putImageData(id, 0, 0);
+  const el = { type: 'fill', id: uid(), mask: out.toDataURL('image/png'), color: S.color,
+    cx: (bx0 + bw / 2) / FILL_SCALE, cy: (by0 + bh / 2) / FILL_SCALE, w: bw / FILL_SCALE, h: bh / FILL_SCALE, rot: 0 };
+  let idx = 0; while (idx < page().elements.length && page().elements[idx].type === 'fill') idx++;   // fills live under the ink
+  page().elements.splice(idx, 0, el);
+  commit(opAdd([el])); requestRender();
+  toast('Filled.');
 }
 let lastTap = null;
 function selectDown(e, p) {
@@ -607,7 +695,7 @@ function updateSelBar() {
     for (const c of FILLS) { const b = add('', () => mutateSel(e => { if (e.type === 'shape') e.fill = c; }), 'sw' + (c === 'none' ? ' none' : '')); if (c !== 'none') b.style.background = c; b.title = c === 'none' ? 'No fill' : 'Fill'; }
     sep();
   }
-  if (sel.some(e => e.type !== 'image' && e.type !== 'link')) {
+  if (sel.some(e => e.type !== 'image' && e.type !== 'link' && e.type !== 'fill')) {
     add('−', () => resizeSel(0.8), ''); add('+', () => resizeSel(1.25), ''); sep();
   }
   if (sel.length === 1 && sel[0].type === 'text') add('Edit', () => startEdit(sel[0]));

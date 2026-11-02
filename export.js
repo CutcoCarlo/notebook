@@ -1,6 +1,6 @@
 /* export.js — PDF (vector) and PNG export of notebook pages. */
 import { PAGE_W, PAGE_H, templateMarks, strokeCommands, layoutText, corners, fromLocal, arrowHead,
-         TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection } from './render.js';
+         TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection, tintedFill } from './render.js';
 
 const rgb = hex => {
   if (!hex || hex[0] !== '#') return [0, 0, 0];
@@ -44,6 +44,12 @@ async function drawPagePDF(doc, page) {
   doc.setLineCap('round'); doc.setLineJoin('round');
   for (const el of page.elements) {
     switch (el.type) {
+      case 'fill': {
+        await imageReady(el.mask);
+        const c = tintedFill(el); if (!c) break;
+        doc.addImage(c.toDataURL('image/png'), 'PNG', el.cx - el.w / 2, el.cy - el.h / 2, el.w, el.h, undefined, 'FAST');
+        break;
+      }
       case 'stroke': {
         if (el.points.length < 1) break;
         doc.setFillColor(...rgb(el.color));

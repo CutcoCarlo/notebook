@@ -127,6 +127,34 @@ export function imageReady(src) {
   return new Promise(res => { const i = getImage(src, () => res(imgCache.get(src).img)); if (i) res(i); });
 }
 
+/* ---------- paint-bucket fills ----------
+   A fill is a bitmap mask (white pixels with alpha) stretched over cx/cy/w/h, tinted with `color`. */
+const tintCache = new Map(), maskData = new Map();
+export function tintedFill(el, onReady) {
+  const key = el.mask + '|' + el.color;
+  let c = tintCache.get(key); if (c) return c;
+  const img = getImage(el.mask, onReady); if (!img) return null;
+  c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const x = c.getContext('2d'); x.drawImage(img, 0, 0); x.globalCompositeOperation = 'source-in'; x.fillStyle = el.color; x.fillRect(0, 0, c.width, c.height);
+  if (tintCache.size > 40) tintCache.clear();
+  tintCache.set(key, c); return c;
+}
+export function maskAlpha(el, p) {
+  const img = getImage(el.mask); if (!img) return 0;
+  let d = maskData.get(el.mask);
+  if (!d) {
+    const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0);
+    d = { w: c.width, h: c.height, a: x.getImageData(0, 0, c.width, c.height).data };
+    if (maskData.size > 40) maskData.clear();
+    maskData.set(el.mask, d);
+  }
+  const [lx, ly] = toLocal(el, p);
+  const px = Math.floor((lx + el.w / 2) / el.w * d.w), py = Math.floor((ly + el.h / 2) / el.h * d.h);
+  if (px < 0 || py < 0 || px >= d.w || py >= d.h) return 0;
+  return d.a[(py * d.w + px) * 4 + 3];
+}
+
 /* ---------- lines & curves ----------
    A line/arrow is a list of points `pts` (page coords). The first and last are the ends; any points
    between are handles the curve passes through (Catmull-Rom spline). cx/cy/w/rot are kept in sync
@@ -192,6 +220,12 @@ export function tracePath(ctx, segs) {
 export function drawElement(ctx, el, env = {}) {
   if (env.hideId && env.hideId === el.id) return;
   switch (el.type) {
+    case 'fill': {
+      const c = tintedFill(el, env.onImage); if (!c) return;
+      ctx.save(); ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
+      ctx.drawImage(c, -el.w / 2, -el.h / 2, el.w, el.h); ctx.restore();
+      break;
+    }
     case 'stroke': {
       if (el.points.length < 1) return;
       ctx.save();
@@ -339,6 +373,7 @@ export function hitElement(el, p, tol) {
     for (let i = 1; i < poly.length; i++) if (distToSegment(p, poly[i - 1], poly[i]) <= r) return true;
     return false;
   }
+  if (el.type === 'fill') return maskAlpha(el, p) > 0;
   const [lx, ly] = toLocal(el, p), hw = el.w / 2, hh = el.h / 2;
   if (el.type === 'shape') {
     const t = tol + el.width / 2;

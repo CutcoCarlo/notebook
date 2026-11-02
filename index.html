@@ -83,6 +83,9 @@
       <button class="tool" data-tool="arrow" title="Arrow">
         <svg viewBox="0 0 24 24"><path d="M5 19L19 5"/><path d="M11 5h8v8"/></svg><span>Arrow</span></button>
       <span class="sep"></span>
+      <button class="tool" data-tool="bucket" title="Paint bucket: fill an enclosed area with the current color">
+        <svg viewBox="0 0 24 24"><path d="M5 11l7-7 7 7-7 7z"/><path d="M3 11h16"/><path d="M19.5 14c1 1.5 1.5 2.5 1.5 3.5a1.5 1.5 0 0 1-3 0c0-1 .5-2 1.5-3.5z"/></svg><span>Fill</span></button>
+      <span class="sep"></span>
       <button class="tool" data-tool="text" title="Text box (type or write with the Pencil)">
         <svg viewBox="0 0 24 24"><path d="M5 6h14"/><path d="M12 6v13"/><path d="M9 19h6"/></svg><span>Text</span></button>
       <button class="tool act" id="btnImage" title="Insert a photo">
@@ -177,6 +180,7 @@
       <li><b>Eraser</b> removes whole strokes you touch.</li>
       <li><b>Select</b>: tap something to select it, or draw a loop around several things. Once selected, drag it to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
       <li><b>Boxes, circles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable.</li>
+      <li><b>Fill</b> (paint bucket): pick a color, then tap inside any closed area, whether it was drawn by hand, with boxes and lines, or a mix. Small gaps are closed for you; if the colour spreads to the page edge the area wasn’t closed, so undo, close the gap, and try again. Tap a filled area again with a new colour to recolour it. Fills sit underneath your ink, and you can select and delete them.</li>
       <li><b>Snap</b> (bottom right) makes line ends, bends and shape corners jump to the corners, ends, midpoints and centres of nearby shapes, and lines boxes up edge‑to‑edge while you move them. A pink ring or guide line shows what it snapped to. Turn it off for free placement.</li>
       <li><b>Curves</b>: select a line or arrow and drag the small + dot in its middle to bend it. Each bend is a blue handle you can keep dragging; more + dots appear on every segment for S‑curves. Double‑tap a blue handle to remove it, or tap Straighten.</li>
       <li><b>Text</b>: pick Text and tap the page. Type, or write in the box with the Pencil and the iPad turns it into typed text (Scribble). Double‑tap a text box later to edit it.</li>
