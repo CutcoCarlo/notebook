@@ -40,6 +40,7 @@ const S = {
   metas: [], nb: null, pi: 0,
   tool: 'pen', color: COLORS[0], size: 'm',
   pencilOnly: localStorage.getItem('pencilOnly') === '1',
+  snap: localStorage.getItem('snap') !== '0',
   view: { s: 1, x: 0, y: 0 },
   sel: [],
   editing: null, editBefore: null, editIsNew: false,
@@ -127,6 +128,7 @@ function render() {
     ctx.save(); ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 1.5 / S.view.s; ctx.setLineDash([6 / S.view.s, 5 / S.view.s]);
     ctx.beginPath(); gesture.pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke(); ctx.restore();
   }
+  drawGuides();
   drawSelection();
   positionSelBar();
   if (S.editing) positionTA();
@@ -325,10 +327,13 @@ function startGesture(e) {
       break;
     case 'eraser':
       gesture = { kind: 'erase', pointerId: id, removed: [] }; eraseAt(p); break;
-    case 'rect': case 'ellipse': case 'line': case 'arrow':
-      gesture = { kind: 'shape', pointerId: id, start: p, el: { type: 'shape', id: uid(), kind: S.tool, cx: p[0], cy: p[1], w: 0, h: 0, rot: 0,
+    case 'rect': case 'ellipse': case 'line': case 'arrow': {
+      let p0 = p, T = null;
+      if (S.snap) { T = snapTargets(new Set()); p0 = snapPoint(p, T, []); }
+      gesture = { kind: 'shape', pointerId: id, start: p0, T, el: { type: 'shape', id: uid(), kind: S.tool, cx: p0[0], cy: p0[1], w: 0, h: 0, rot: 0,
         color: S.color, width: R.SHAPE_WIDTHS[S.size], fill: 'none' } };
       break;
+    }
     case 'text': createText(p); break;
     case 'select': selectDown(e, p); break;
   }
@@ -386,7 +391,7 @@ function removeBend(el, idx) {
   commit(opModify([before], [cloneEl(el)])); requestRender();
 }
 function moveGesture(ev) {
-  const g = gesture, p = evPage(ev);
+  const g = gesture; let p = evPage(ev);
   switch (g.kind) {
     case 'stroke': {
       const pts = g.el.points, last = pts[pts.length - 1];
@@ -395,17 +400,29 @@ function moveGesture(ev) {
     }
     case 'erase': eraseAt(p); break;
     case 'shape': {
+      if (S.snap) { if (!g.T) g.T = snapTargets(new Set()); g.guides = []; p = snapPoint(p, g.T, g.guides); }
       const [sx, sy] = g.start, dx = p[0] - sx, dy = p[1] - sy, el = g.el;
       if (el.kind === 'line' || el.kind === 'arrow') { el.pts = [[sx, sy], [p[0], p[1]]]; R.syncLine(el); }
       else { el.cx = sx + dx / 2; el.cy = sy + dy / 2; el.w = Math.abs(dx); el.h = Math.abs(dy); }
       break;
     }
     case 'move': {
-      const dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+      let dx = p[0] - g.start[0], dy = p[1] - g.start[1];
       if (!g.moved && Math.hypot(dx, dy) * S.view.s < 3) return;
-      g.moved = true; g.els.forEach((el, i) => translateEl(el, g.snap[i], dx, dy)); break;
+      g.moved = true;
+      if (S.snap) {
+        if (!g.T) g.T = snapTargets(new Set(g.els));
+        const f = { pts: [], xs: [], ys: [] };
+        for (const sn of g.snap) { const ff = featurePts(sn); ff.pts.forEach(q => f.pts.push([q[0] + dx, q[1] + dy])); ff.xs.forEach(x => f.xs.push(x + dx)); ff.ys.forEach(y => f.ys.push(y + dy)); }
+        g.guides = []; const [ex, ey] = snapDelta(f, g.T, g.guides); dx += ex; dy += ey;
+      }
+      g.els.forEach((el, i) => translateEl(el, g.snap[i], dx, dy)); break;
     }
-    case 'handle': g.moved = true; applyHandle(p); break;
+    case 'handle': {
+      g.moved = true;
+      if (S.snap && g.handle.id !== 'rot') { if (!g.T) g.T = snapTargets(new Set(g.els)); g.guides = []; p = snapPoint(p, g.T, g.guides); }
+      applyHandle(p); break;
+    }
     case 'lasso': g.pts.push(p); break;
   }
   requestRender();
@@ -448,6 +465,74 @@ function eraseAt(p) {
   if (gesture && gesture.kind === 'erase') gesture.removed.push(...items);
   if (S.sel.some(el => gone.includes(el))) setSel(S.sel.filter(el => !gone.includes(el)));
   layerDirty = true;
+}
+
+/* ---------------- snapping ----------------
+   Key points of an element: corners, edge midpoints, centre, line ends and bends, stroke ends.
+   xs/ys are the vertical/horizontal edge lines used for edge-to-edge alignment. */
+const SNAP_PX = 10;
+function featurePts(el) {
+  const f = { pts: [], xs: [], ys: [] };
+  if (el.type === 'stroke') {
+    if (el.tool !== 'highlighter' && el.points.length) { const a = el.points[0], b = el.points[el.points.length - 1]; f.pts.push([a[0], a[1]], [b[0], b[1]]); }
+    return f;
+  }
+  if (isLineEl(el)) {
+    const lp = R.linePts(el);
+    lp.forEach(q => f.pts.push([q[0], q[1]]));
+    R.curveSegments(lp).forEach(b => f.pts.push(R.bezierPoint(b, 0.5)));
+    f.xs.push(lp[0][0], lp[lp.length - 1][0]); f.ys.push(lp[0][1], lp[lp.length - 1][1]);
+    return f;
+  }
+  const cs = R.corners(el);
+  cs.forEach(c => f.pts.push(c)); f.pts.push([el.cx, el.cy]);
+  for (let i = 0; i < 4; i++) { const a = cs[i], b = cs[(i + 1) % 4]; f.pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); }
+  if (Math.abs(el.rot || 0) < 0.01) { f.xs.push(el.cx - el.w / 2, el.cx, el.cx + el.w / 2); f.ys.push(el.cy - el.h / 2, el.cy, el.cy + el.h / 2); }
+  return f;
+}
+function snapTargets(exclude) {
+  const T = { pts: [], xs: [0, R.PAGE_W / 2, R.PAGE_W], ys: [0, R.PAGE_H / 2, R.PAGE_H] };
+  for (const el of page().elements) {
+    if (exclude.has(el)) continue;
+    const f = featurePts(el); T.pts.push(...f.pts); T.xs.push(...f.xs); T.ys.push(...f.ys);
+  }
+  return T;
+}
+/* snap one dragged point: a nearby key point wins, otherwise align x and y to edges separately */
+function snapPoint(p, T, guides) {
+  const th = SNAP_PX / S.view.s;
+  let best = null, bd = th;
+  for (const q of T.pts) { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; best = q; } }
+  if (best) { guides.push({ k: 'pt', p: best }); return [best[0], best[1]]; }
+  let x = p[0], y = p[1], bx = th, by = th, gx = null, gy = null;
+  for (const X of T.xs) { const d = Math.abs(X - p[0]); if (d < bx) { bx = d; x = X; gx = X; } }
+  for (const Y of T.ys) { const d = Math.abs(Y - p[1]); if (d < by) { by = d; y = Y; gy = Y; } }
+  if (gx !== null) guides.push({ k: 'x', x: gx }); if (gy !== null) guides.push({ k: 'y', y: gy });
+  return [x, y];
+}
+/* snap a moving group: returns the extra [dx, dy] to add */
+function snapDelta(f, T, guides) {
+  const th = SNAP_PX / S.view.s;
+  let best = null, bd = th;
+  for (const m of f.pts) for (const q of T.pts) { const d = Math.hypot(q[0] - m[0], q[1] - m[1]); if (d < bd) { bd = d; best = [q[0] - m[0], q[1] - m[1], q]; } }
+  if (best) { guides.push({ k: 'pt', p: best[2] }); return [best[0], best[1]]; }
+  let dx = 0, dy = 0, bx = th, by = th, gx = null, gy = null;
+  for (const m of f.xs) for (const X of T.xs) { const d = Math.abs(X - m); if (d < bx) { bx = d; dx = X - m; gx = X; } }
+  for (const m of f.ys) for (const Y of T.ys) { const d = Math.abs(Y - m); if (d < by) { by = d; dy = Y - m; gy = Y; } }
+  if (gx !== null) guides.push({ k: 'x', x: gx }); if (gy !== null) guides.push({ k: 'y', y: gy });
+  return [dx, dy];
+}
+function drawGuides() {
+  const g = gesture; if (!g || !g.guides || !g.guides.length) return;
+  const s = S.view.s;
+  ctx.save(); ctx.strokeStyle = '#e11d48'; ctx.lineWidth = 1 / s;
+  for (const gd of g.guides) {
+    if (gd.k === 'pt') { ctx.setLineDash([]); ctx.lineWidth = 1.5 / s; ctx.beginPath(); ctx.arc(gd.p[0], gd.p[1], 6 / s, 0, Math.PI * 2); ctx.stroke(); continue; }
+    ctx.setLineDash([4 / s, 3 / s]); ctx.lineWidth = 1 / s; ctx.beginPath();
+    if (gd.k === 'x') { ctx.moveTo(gd.x, 0); ctx.lineTo(gd.x, R.PAGE_H); } else { ctx.moveTo(0, gd.y); ctx.lineTo(R.PAGE_W, gd.y); }
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /* ---------------- transforms ---------------- */
@@ -659,6 +744,8 @@ $$('#sizes button').forEach(b => b.onclick = () => setSize(b.dataset.size));
 function setSize(s) { S.size = s; $$('#sizes button').forEach(b => b.classList.toggle('on', b.dataset.size === s)); }
 
 function setPencilOnly(v) { S.pencilOnly = v; localStorage.setItem('pencilOnly', v ? '1' : '0'); $('#btnPencilOnly').classList.toggle('on', v); }
+function setSnap(v) { S.snap = v; localStorage.setItem('snap', v ? '1' : '0'); $('#btnSnap').classList.toggle('on', v); }
+$('#btnSnap').onclick = () => { setSnap(!S.snap); toast(S.snap ? 'Snapping on: ends and edges line up with nearby shapes.' : 'Snapping off.'); };
 $('#btnPencilOnly').onclick = () => { setPencilOnly(!S.pencilOnly); toast(S.pencilOnly ? 'Pencil only: fingers scroll and zoom.' : 'Fingers can draw now. Use two fingers to zoom.'); };
 $('#btnFit').onclick = fitView;
 $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
@@ -938,7 +1025,7 @@ window.addEventListener('pagehide', () => { if (S.nb) saveNow(); });
 /* ---------------- boot ---------------- */
 window.__nb = () => S;   // debug hook: inspect state from the console
 (async function boot() {
-  setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly);
+  setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly); setSnap(S.snap);
   try { await DB.open(); } catch (e) { alert('This browser cannot store notebooks (private mode?). ' + e.message); }
   await showHome();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
