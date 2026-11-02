@@ -127,8 +127,67 @@ export function imageReady(src) {
   return new Promise(res => { const i = getImage(src, () => res(imgCache.get(src).img)); if (i) res(i); });
 }
 
-/* ---------- elements ---------- */
+/* ---------- lines & curves ----------
+   A line/arrow is a list of points `pts` (page coords). The first and last are the ends; any points
+   between are handles the curve passes through (Catmull-Rom spline). cx/cy/w/rot are kept in sync
+   with the two ends so the generic selection code keeps working. */
 export function arrowHead(el) { return 8 + (el.width || 2) * 2.5; }
+export function linePts(el) {
+  if (el.pts && el.pts.length >= 2) return el.pts;
+  return [fromLocal(el, [-el.w / 2, 0]), fromLocal(el, [el.w / 2, 0])];
+}
+export function syncLine(el) {
+  const a = el.pts[0], b = el.pts[el.pts.length - 1];
+  el.cx = (a[0] + b[0]) / 2; el.cy = (a[1] + b[1]) / 2; el.w = Math.hypot(b[0] - a[0], b[1] - a[1]); el.h = 0; el.rot = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  return el;
+}
+/* cubic bezier segments [p0, c1, c2, p1] through all points */
+export function curveSegments(pts) {
+  const segs = [];
+  if (pts.length < 2) return segs;
+  if (pts.length === 2) return [[pts[0], pts[0], pts[1], pts[1]]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+    segs.push([p1, [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6], [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6], p2]);
+  }
+  return segs;
+}
+export function bezierPoint(b, t) {
+  const u = 1 - t, a = u * u * u, bb = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+  return [a * b[0][0] + bb * b[1][0] + c * b[2][0] + d * b[3][0], a * b[0][1] + bb * b[1][1] + c * b[2][1] + d * b[3][1]];
+}
+function lerp(p, q, t) { return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]; }
+export function splitBezier(b, t) {
+  const p01 = lerp(b[0], b[1], t), p12 = lerp(b[1], b[2], t), p23 = lerp(b[2], b[3], t);
+  const p012 = lerp(p01, p12, t), p123 = lerp(p12, p23, t), m = lerp(p012, p123, t);
+  return [[b[0], p01, p012, m], [m, p123, p23, b[3]]];
+}
+/* shorten the end of a curve by `len` (so an arrowhead can sit cleanly on the tip) */
+export function trimEnd(segs, len) {
+  if (!segs.length || len <= 0) return segs;
+  const b = segs[segs.length - 1];
+  let prev = b[3], acc = 0, t = 1;
+  for (let i = 1; i <= 48; i++) { t = 1 - i / 48; const p = bezierPoint(b, t); acc += Math.hypot(p[0] - prev[0], p[1] - prev[1]); prev = p; if (acc >= len) break; }
+  if (acc < len) return segs.length > 1 ? trimEnd(segs.slice(0, -1), len - acc) : [[b[0], b[0], b[0], b[0]]];
+  return segs.slice(0, -1).concat([splitBezier(b, t)[0]]);
+}
+export function endDirection(pts) {
+  const segs = curveSegments(pts), b = segs[segs.length - 1], end = b[3];
+  let dx = end[0] - b[2][0], dy = end[1] - b[2][1];
+  if (Math.hypot(dx, dy) < 1e-6) { dx = end[0] - b[0][0]; dy = end[1] - b[0][1]; }
+  const d = Math.hypot(dx, dy) || 1; return [dx / d, dy / d];
+}
+/* polyline approximation (for hit testing and bounds) */
+export function curvePolyline(pts, n = 10) {
+  const out = [];
+  for (const b of curveSegments(pts)) for (let i = 0; i <= n; i++) out.push(bezierPoint(b, i / n));
+  return out.length ? out : pts.slice();
+}
+export function tracePath(ctx, segs) {
+  if (!segs.length) return;
+  ctx.moveTo(segs[0][0][0], segs[0][0][1]);
+  for (const b of segs) ctx.bezierCurveTo(b[1][0], b[1][1], b[2][0], b[2][1], b[3][0], b[3][1]);
+}
 
 export function drawElement(ctx, el, env = {}) {
   if (env.hideId && env.hideId === el.id) return;
@@ -143,6 +202,24 @@ export function drawElement(ctx, el, env = {}) {
       break;
     }
     case 'shape': {
+      if (el.kind === 'line' || el.kind === 'arrow') {
+        const pts = linePts(el), hs = el.kind === 'arrow' ? arrowHead(el) : 0;
+        let segs = curveSegments(pts);
+        if (hs) segs = trimEnd(segs, hs * 0.6);
+        ctx.save();
+        ctx.strokeStyle = el.color; ctx.lineWidth = el.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); tracePath(ctx, segs); ctx.stroke();
+        if (hs) {
+          const tip = pts[pts.length - 1], [dx, dy] = endDirection(pts);
+          ctx.fillStyle = el.color; ctx.beginPath();
+          ctx.moveTo(tip[0], tip[1]);
+          ctx.lineTo(tip[0] - dx * hs - dy * hs * 0.45, tip[1] - dy * hs + dx * hs * 0.45);
+          ctx.lineTo(tip[0] - dx * hs + dy * hs * 0.45, tip[1] - dy * hs - dx * hs * 0.45);
+          ctx.closePath(); ctx.fill();
+        }
+        ctx.restore();
+        break;
+      }
       ctx.save();
       ctx.translate(el.cx, el.cy); ctx.rotate(el.rot || 0);
       ctx.strokeStyle = el.color; ctx.lineWidth = el.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -155,10 +232,6 @@ export function drawElement(ctx, el, env = {}) {
         ctx.beginPath(); ctx.ellipse(0, 0, Math.max(0.1, hw), Math.max(0.1, hh), 0, 0, Math.PI * 2);
         if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
         ctx.stroke();
-      } else {
-        const hs = el.kind === 'arrow' ? arrowHead(el) : 0;
-        ctx.beginPath(); ctx.moveTo(-hw, 0); ctx.lineTo(hw - hs * 0.6, 0); ctx.stroke();
-        if (hs) { ctx.fillStyle = el.color; ctx.beginPath(); ctx.moveTo(hw, 0); ctx.lineTo(hw - hs, -hs * 0.45); ctx.lineTo(hw - hs, hs * 0.45); ctx.closePath(); ctx.fill(); }
       }
       ctx.restore();
       break;
@@ -230,9 +303,12 @@ export function bbox(el) {
   if (el.type === 'stroke') {
     for (const p of el.points) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
     pad = el.size / 2 + 1;
+  } else if (el.type === 'shape' && (el.kind === 'line' || el.kind === 'arrow')) {
+    for (const p of curvePolyline(linePts(el), 6)) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+    pad = el.width / 2 + (el.kind === 'arrow' ? arrowHead(el) * 0.5 : 0);
   } else {
     for (const p of corners(el)) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
-    if (el.type === 'shape') pad = el.width / 2 + (el.kind === 'arrow' ? arrowHead(el) * 0.5 : 0);
+    if (el.type === 'shape') pad = el.width / 2;
   }
   return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
 }
@@ -258,10 +334,14 @@ export function hitElement(el, p, tol) {
     for (let i = 1; i < pts.length; i++) if (distToSegment(p, pts[i - 1], pts[i]) <= r) return true;
     return false;
   }
+  if (el.type === 'shape' && (el.kind === 'line' || el.kind === 'arrow')) {
+    const r = tol + el.width / 2 + (el.kind === 'arrow' ? arrowHead(el) * 0.3 : 0), poly = curvePolyline(linePts(el), 8);
+    for (let i = 1; i < poly.length; i++) if (distToSegment(p, poly[i - 1], poly[i]) <= r) return true;
+    return false;
+  }
   const [lx, ly] = toLocal(el, p), hw = el.w / 2, hh = el.h / 2;
   if (el.type === 'shape') {
     const t = tol + el.width / 2;
-    if (el.kind === 'line' || el.kind === 'arrow') return Math.abs(ly) <= t + (el.kind === 'arrow' ? arrowHead(el) * 0.3 : 0) && lx >= -hw - t && lx <= hw + t;
     const filled = el.fill && el.fill !== 'none';
     if (el.kind === 'rect') {
       const inside = Math.abs(lx) <= hw + t && Math.abs(ly) <= hh + t;

@@ -141,7 +141,9 @@ const isLineEl = e => e && e.type === 'shape' && (e.kind === 'line' || e.kind ==
 function handles(f) {
   const hs = [];
   if (isLineEl(f.single)) {
-    hs.push({ id: 'p0', p: R.fromLocal(f, [-f.w / 2, 0]) }, { id: 'p1', p: R.fromLocal(f, [f.w / 2, 0]) });
+    const pts = R.linePts(f.single);
+    pts.forEach((p, i) => hs.push({ id: i === 0 ? 'p0' : i === pts.length - 1 ? 'p1' : 'c' + i, p, idx: i }));
+    R.curveSegments(pts).forEach((b, i) => hs.push({ id: 'm' + i, p: R.bezierPoint(b, 0.5), idx: i, add: true }));
   } else {
     const hw = f.w / 2, hh = f.h / 2;
     hs.push({ id: 'nw', p: R.fromLocal(f, [-hw, -hh]) }, { id: 'ne', p: R.fromLocal(f, [hw, -hh]) },
@@ -163,8 +165,16 @@ function drawSelection() {
     ctx.beginPath(); ctx.moveTo(top[0], top[1]); ctx.lineTo(rh[0], rh[1]); ctx.stroke();
   }
   for (const h of handles(f)) {
+    if (h.add) {   // small hollow dot: tap or drag to add a bend here
+      ctx.beginPath(); ctx.arc(h.p[0], h.p[1], 5 / s, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.fill(); ctx.strokeStyle = '#9ca3af'; ctx.lineWidth = 1.2 / s; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(h.p[0] - 2.5 / s, h.p[1]); ctx.lineTo(h.p[0] + 2.5 / s, h.p[1]); ctx.moveTo(h.p[0], h.p[1] - 2.5 / s); ctx.lineTo(h.p[0], h.p[1] + 2.5 / s); ctx.stroke();
+      ctx.strokeStyle = '#2563eb';
+      continue;
+    }
+    const bend = h.id[0] === 'c';
     ctx.beginPath(); ctx.arc(h.p[0], h.p[1], (h.id === 'rot' ? 8 : 7) / s, 0, Math.PI * 2);
-    ctx.fillStyle = h.id === 'rot' ? '#2563eb' : '#fff'; ctx.fill(); ctx.lineWidth = 1.5 / s; ctx.stroke();
+    ctx.fillStyle = (h.id === 'rot' || bend) ? '#2563eb' : '#fff'; ctx.fill(); ctx.lineWidth = 1.5 / s; ctx.stroke();
   }
   ctx.restore();
 }
@@ -174,7 +184,7 @@ const hist = pg => (pg._hist || (pg._hist = { undo: [], redo: [] }));
 function commit(op) {
   const h = hist(page()); h.undo.push(op); if (h.undo.length > 500) h.undo.shift(); h.redo = [];
   if (S.pi === 0) S.thumbDirty = true;
-  layerDirty = true; updateUndoButtons(); saveSoon();
+  layerDirty = true; updateUndoButtons(); updateSelBar(); saveSoon();
 }
 const opAdd = els => ({ t: 'add', items: els.map(el => ({ i: page().elements.indexOf(el), el: cloneEl(el) })) });
 const opRemove = items => ({ t: 'remove', items });          // items in removal order, index at time of removal
@@ -328,8 +338,21 @@ let lastTap = null;
 function selectDown(e, p) {
   const f = selFrame();
   if (f) {
-    const h = hitHandle(f, stagePt(e));
-    if (h) { gesture = { kind: 'handle', pointerId: e.pointerId, handle: h, f, start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), moved: false }; return; }
+    let h = hitHandle(f, stagePt(e));
+    if (h) {
+      let before = null, moved = false;
+      if (h.add) {   // insert a new bend at this spot and start dragging it
+        const el = f.single; before = [cloneEl(el)];
+        const pts = R.linePts(el).map(q => q.slice()); pts.splice(h.idx + 1, 0, [h.p[0], h.p[1]]); el.pts = pts; R.syncLine(el);
+        h = { id: 'c' + (h.idx + 1), idx: h.idx + 1, p: h.p }; moved = true; lastHandleTap = null;
+      } else if (h.id[0] === 'c') {   // double-tap a bend to remove it
+        const now = performance.now();
+        if (lastHandleTap && lastHandleTap.el === f.single && lastHandleTap.id === h.id && now - lastHandleTap.t < 450) { lastHandleTap = null; removeBend(f.single, h.idx); return; }
+        lastHandleTap = { el: f.single, id: h.id, t: now };
+      }
+      gesture = { kind: 'handle', pointerId: e.pointerId, handle: h, f: selFrame(), start: p, els: S.sel.slice(), snap: S.sel.map(cloneEl), before, moved };
+      return;
+    }
   }
   const hit = hitTest(p);
   if (hit) {
@@ -351,8 +374,16 @@ function hitTest(p) {
   return null;
 }
 function hitHandle(f, sp) {
-  for (const h of handles(f)) { const q = toScreen(h.p); if (Math.hypot(q[0] - sp[0], q[1] - sp[1]) <= 18) return h; }
+  const hs = handles(f);
+  for (const h of hs) { if (h.add) continue; const q = toScreen(h.p); if (Math.hypot(q[0] - sp[0], q[1] - sp[1]) <= 18) return h; }
+  for (const h of hs) { if (!h.add) continue; const q = toScreen(h.p); if (Math.hypot(q[0] - sp[0], q[1] - sp[1]) <= 14) return h; }
   return null;
+}
+let lastHandleTap = null;
+function removeBend(el, idx) {
+  const before = cloneEl(el);
+  const pts = R.linePts(el).filter((_, i) => i !== idx); el.pts = pts; R.syncLine(el);
+  commit(opModify([before], [cloneEl(el)])); requestRender();
 }
 function moveGesture(ev) {
   const g = gesture, p = evPage(ev);
@@ -365,7 +396,7 @@ function moveGesture(ev) {
     case 'erase': eraseAt(p); break;
     case 'shape': {
       const [sx, sy] = g.start, dx = p[0] - sx, dy = p[1] - sy, el = g.el;
-      if (el.kind === 'line' || el.kind === 'arrow') { el.cx = sx + dx / 2; el.cy = sy + dy / 2; el.w = Math.hypot(dx, dy); el.h = 0; el.rot = Math.atan2(dy, dx); }
+      if (el.kind === 'line' || el.kind === 'arrow') { el.pts = [[sx, sy], [p[0], p[1]]]; R.syncLine(el); }
       else { el.cx = sx + dx / 2; el.cy = sy + dy / 2; el.w = Math.abs(dx); el.h = Math.abs(dy); }
       break;
     }
@@ -392,11 +423,11 @@ function endGesture() {
       break;
     case 'shape': {
       const el = g.el;
-      if (el.w < 4 && el.h < 4) { if (isLineEl(el)) { el.w = 140; el.rot = 0; el.cx = g.start[0] + 70; } else { el.w = 140; el.h = 90; el.cx = g.start[0] + 70; el.cy = g.start[1] + 45; } }
+      if (el.w < 4 && el.h < 4) { if (isLineEl(el)) { el.pts = [[g.start[0], g.start[1]], [g.start[0] + 140, g.start[1]]]; R.syncLine(el); } else { el.w = 140; el.h = 90; el.cx = g.start[0] + 70; el.cy = g.start[1] + 45; } }
       page().elements.push(el); setTool('select'); setSel([el]); commit(opAdd([el])); break;
     }
     case 'move': case 'handle':
-      if (g.moved) commit(opModify(g.snap, g.els.map(cloneEl)));
+      if (g.moved) commit(opModify(g.before || g.snap, g.els.map(cloneEl)));
       break;
     case 'lasso':
       if (g.pts.length >= 3) setSel(page().elements.filter(el => R.elementInLasso(el, g.pts)));
@@ -422,10 +453,12 @@ function eraseAt(p) {
 /* ---------------- transforms ---------------- */
 function translateEl(el, s, dx, dy) {
   if (el.type === 'stroke') el.points = s.points.map(p => [p[0] + dx, p[1] + dy, p[2]]);
+  else if (s.pts) { el.pts = s.pts.map(q => [q[0] + dx, q[1] + dy]); R.syncLine(el); }
   else { el.cx = s.cx + dx; el.cy = s.cy + dy; }
 }
 function scaleEl(el, s, ax, ay, k) {
   if (el.type === 'stroke') { el.points = s.points.map(p => [ax + (p[0] - ax) * k, ay + (p[1] - ay) * k, p[2]]); el.size = s.size * k; return; }
+  if (s.pts) { el.pts = s.pts.map(q => [ax + (q[0] - ax) * k, ay + (q[1] - ay) * k]); el.width = s.width * k; R.syncLine(el); return; }
   el.cx = ax + (s.cx - ax) * k; el.cy = ay + (s.cy - ay) * k; el.w = s.w * k; el.h = s.h * k;
   if (el.type === 'shape') el.width = s.width * k;
   if (el.type === 'text') { el.size = s.size * k; R.layoutText(el); }
@@ -434,6 +467,7 @@ function rotateEl(el, s, cx, cy, da) {
   const c = Math.cos(da), sn = Math.sin(da);
   const rp = (x, y) => [cx + (x - cx) * c - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * c];
   if (el.type === 'stroke') { el.points = s.points.map(p => { const q = rp(p[0], p[1]); return [q[0], q[1], p[2]]; }); return; }
+  if (s.pts) { el.pts = s.pts.map(q => rp(q[0], q[1])); R.syncLine(el); return; }
   [el.cx, el.cy] = rp(s.cx, s.cy); el.rot = (s.rot || 0) + da;
 }
 function snapAngle(a) {
@@ -449,11 +483,9 @@ function applyHandle(p) {
     g.els.forEach((el, i) => rotateEl(el, g.snap[i], f.cx, f.cy, da));
     return;
   }
-  if (h.id === 'p0' || h.id === 'p1') {
-    const el = g.els[0];
-    const other = R.fromLocal(f, [h.id === 'p0' ? f.w / 2 : -f.w / 2, 0]);
-    const a = h.id === 'p0' ? p : other, b = h.id === 'p0' ? other : p;
-    el.cx = (a[0] + b[0]) / 2; el.cy = (a[1] + b[1]) / 2; el.w = Math.max(2, Math.hypot(b[0] - a[0], b[1] - a[1])); el.rot = Math.atan2(b[1] - a[1], b[0] - a[0]);
+  if (h.id === 'p0' || h.id === 'p1' || h.id[0] === 'c') {
+    const el = g.els[0], sn = g.snap[0];
+    const pts = R.linePts(sn).map(q => q.slice()); pts[h.idx] = [p[0], p[1]]; el.pts = pts; R.syncLine(el);
     return;
   }
   const sign = { nw: [-1, -1], ne: [1, -1], se: [1, 1], sw: [-1, 1] }[h.id];
@@ -494,6 +526,7 @@ function updateSelBar() {
     add('−', () => resizeSel(0.8), ''); add('+', () => resizeSel(1.25), ''); sep();
   }
   if (sel.length === 1 && sel[0].type === 'text') add('Edit', () => startEdit(sel[0]));
+  if (sel.length === 1 && isLineEl(sel[0]) && R.linePts(sel[0]).length > 2) add('Straighten', () => mutateSel(e => { const q = R.linePts(e); e.pts = [q[0], q[q.length - 1]]; R.syncLine(e); }));
   if (sel.length === 1 && sel[0].type === 'link') add('Open', () => window.open(sel[0].url, '_blank', 'noopener'));
   add('Duplicate', duplicateSel); add('Front', () => reorderSel(true)); add('Back', () => reorderSel(false));
   add('Delete', deleteSel, 'danger');

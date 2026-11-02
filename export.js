@@ -1,6 +1,6 @@
 /* export.js — PDF (vector) and PNG export of notebook pages. */
 import { PAGE_W, PAGE_H, templateMarks, strokeCommands, layoutText, corners, fromLocal, arrowHead,
-         TEXT_PAD, imageReady, hostOf, renderPage } from './render.js';
+         TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection } from './render.js';
 
 const rgb = hex => {
   if (!hex || hex[0] !== '#') return [0, 0, 0];
@@ -69,12 +69,15 @@ async function drawPagePDF(doc, page) {
           ops.push({ op: 'h' });
           doc.path(ops); filled ? doc.fillStroke() : doc.stroke();
         } else {
-          const hw = el.w / 2, hs = el.kind === 'arrow' ? arrowHead(el) : 0;
-          const p0 = fromLocal(el, [-hw, 0]), p1 = fromLocal(el, [hw - hs * 0.6, 0]);
-          doc.line(p0[0], p0[1], p1[0], p1[1]);
+          const pts = linePts(el), hs = el.kind === 'arrow' ? arrowHead(el) : 0;
+          let segs = curveSegments(pts); if (hs) segs = trimEnd(segs, hs * 0.6);
+          const ops = [{ op: 'm', c: [segs[0][0][0], segs[0][0][1]] }];
+          for (const b of segs) ops.push({ op: 'c', c: [b[1][0], b[1][1], b[2][0], b[2][1], b[3][0], b[3][1]] });
+          doc.path(ops); doc.stroke();
           if (hs) {
+            const tip = pts[pts.length - 1], [dx, dy] = endDirection(pts);
             doc.setFillColor(...rgb(el.color));
-            doc.path(polyOps([fromLocal(el, [hw, 0]), fromLocal(el, [hw - hs, -hs * 0.45]), fromLocal(el, [hw - hs, hs * 0.45])])); doc.fill();
+            doc.path(polyOps([tip, [tip[0] - dx * hs - dy * hs * 0.45, tip[1] - dy * hs + dx * hs * 0.45], [tip[0] - dx * hs + dy * hs * 0.45, tip[1] - dy * hs - dx * hs * 0.45]])); doc.fill();
           }
         }
         break;
