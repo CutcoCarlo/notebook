@@ -516,7 +516,7 @@ function moveGesture(ev) {
     }
     case 'erase': eraseAt(p); break;
     case 'shape': {
-      if (S.snap) { if (!g.T) g.T = snapTargets(new Set()); g.guides = []; p = snapPoint(p, g.T, g.guides); }
+      if (S.snap) { if (!g.T) g.T = snapTargets(new Set()); g.guides = []; p = isLineEl(g.el) ? snapLineEnd(g.start, p, g.T, g.guides) : snapPoint(p, g.T, g.guides); }
       const [sx, sy] = g.start, dx = p[0] - sx, dy = p[1] - sy, el = g.el;
       if (el.kind === 'line' || el.kind === 'arrow') { el.pts = [[sx, sy], [p[0], p[1]]]; R.syncLine(el); }
       else { el.cx = sx + dx / 2; el.cy = sy + dy / 2; el.w = Math.abs(dx); el.h = Math.abs(dy); }
@@ -536,7 +536,14 @@ function moveGesture(ev) {
     }
     case 'handle': {
       g.moved = true;
-      if (S.snap && g.handle.id !== 'rot') { if (!g.T) g.T = snapTargets(new Set(g.els)); g.guides = []; p = snapPoint(p, g.T, g.guides); }
+      if (S.snap && g.handle.id !== 'rot') {
+        if (!g.T) g.T = snapTargets(new Set(g.els)); g.guides = [];
+        const h = g.handle, sn = g.snap[0];
+        if (g.els.length === 1 && isLineEl(g.els[0]) && (h.id === 'p0' || h.id === 'p1')) {
+          const pts = R.linePts(sn), anchor = h.id === 'p0' ? pts[1] : pts[pts.length - 2];
+          p = snapLineEnd(anchor, p, g.T, g.guides);
+        } else p = snapPoint(p, g.T, g.guides);
+      }
       applyHandle(p); break;
     }
     case 'lasso': g.pts.push(p); break;
@@ -634,6 +641,26 @@ function snapPoint(p, T, guides) {
   if (gx !== null) guides.push({ k: 'x', x: gx }); if (gy !== null) guides.push({ k: 'y', y: gy });
   return [x, y];
 }
+/* snap the end of a line: a key point wins; otherwise the line's angle snaps to 0/30/45/60/90° families; otherwise edges */
+const SNAP_ANGLES = []; for (let base = -180; base < 180; base += 90) for (const a of [0, 30, 45, 60]) SNAP_ANGLES.push(base + a);
+function snapLineEnd(anchor, p, T, guides) {
+  const th = SNAP_PX / S.view.s;
+  let best = null, bd = th;
+  for (const q of T.pts) { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; best = q; } }
+  if (best) { guides.push({ k: 'pt', p: best }); return [best[0], best[1]]; }
+  const dx = p[0] - anchor[0], dy = p[1] - anchor[1], len = Math.hypot(dx, dy);
+  if (len > 14 / S.view.s) {
+    const deg = Math.atan2(dy, dx) * 180 / Math.PI;
+    let bestA = null, ba = 4.5;
+    for (const a of SNAP_ANGLES) { const diff = Math.abs(((deg - a + 540) % 360) - 180); if (diff < ba) { ba = diff; bestA = a; } }
+    if (bestA !== null) {
+      const r = bestA * Math.PI / 180, q = [anchor[0] + len * Math.cos(r), anchor[1] + len * Math.sin(r)];
+      guides.push({ k: 'ang', a: anchor, b: q, deg: ((bestA % 180) + 180) % 180 });
+      return q;
+    }
+  }
+  return snapPoint(p, T, guides);
+}
 /* snap a moving group: returns the extra [dx, dy] to add */
 function snapDelta(f, T, guides) {
   const th = SNAP_PX / S.view.s;
@@ -652,6 +679,13 @@ function drawGuides() {
   ctx.save(); ctx.strokeStyle = '#e11d48'; ctx.lineWidth = 1 / s;
   for (const gd of g.guides) {
     if (gd.k === 'pt') { ctx.setLineDash([]); ctx.lineWidth = 1.5 / s; ctx.beginPath(); ctx.arc(gd.p[0], gd.p[1], 6 / s, 0, Math.PI * 2); ctx.stroke(); continue; }
+    if (gd.k === 'ang') {
+      const dx = gd.b[0] - gd.a[0], dy = gd.b[1] - gd.a[1], len = Math.hypot(dx, dy) || 1, ex = dx / len * 40 / s, ey = dy / len * 40 / s;
+      ctx.setLineDash([4 / s, 3 / s]); ctx.lineWidth = 1 / s; ctx.beginPath(); ctx.moveTo(gd.a[0] - ex, gd.a[1] - ey); ctx.lineTo(gd.b[0] + ex, gd.b[1] + ey); ctx.stroke();
+      ctx.setLineDash([]); ctx.fillStyle = '#e11d48'; ctx.font = `${11 / s}px Helvetica, Arial, sans-serif`; ctx.textBaseline = 'bottom';
+      ctx.fillText(`${gd.deg}°`, gd.b[0] + 10 / s, gd.b[1] - 6 / s);
+      continue;
+    }
     ctx.setLineDash([4 / s, 3 / s]); ctx.lineWidth = 1 / s; ctx.beginPath();
     if (gd.k === 'x') { ctx.moveTo(gd.x, 0); ctx.lineTo(gd.x, R.PAGE_H); } else { ctx.moveTo(0, gd.y); ctx.lineTo(R.PAGE_W, gd.y); }
     ctx.stroke();

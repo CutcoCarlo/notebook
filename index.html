@@ -37,17 +37,17 @@
   <header class="bar">
     <button id="btnHome" class="btn icon" title="All notebooks" aria-label="All notebooks">‹</button>
     <button id="btnTitle" class="title" title="Rename"></button>
-    <div class="undogroup">
-      <button id="btnUndo" class="btn icon" title="Undo" aria-label="Undo">↶</button>
-      <button id="btnRedo" class="btn icon" title="Redo" aria-label="Redo">↷</button>
-    </div>
     <div class="spacer"></div>
+    <button id="btnAddPage" class="btn addpage" title="Add a page after this one">+ Page</button>
     <div class="pagenav">
       <button id="btnPrev" class="btn icon" title="Previous page">‹</button>
       <button id="btnPageNo" class="btn pageno" title="Show pages">1 / 1</button>
       <button id="btnNext" class="btn icon" title="Next page">›</button>
     </div>
-    <button id="btnAddPage" class="btn addpage" title="Add a page after this one">+ Page</button>
+    <div class="undogroup">
+      <button id="btnUndo" class="btn icon" title="Undo" aria-label="Undo">↶</button>
+      <button id="btnRedo" class="btn icon" title="Redo" aria-label="Redo">↷</button>
+    </div>
     <button id="btnMenu" class="btn icon" title="Menu" aria-label="Menu">⋯</button>
   </header>
 
@@ -181,7 +181,7 @@
       <li><b>Select</b>: tap something to select it, or draw a loop around several things. Once selected, drag it to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
       <li><b>Boxes, circles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable.</li>
       <li><b>Fill</b> (paint bucket): pick a color, then tap inside any closed area, whether it was drawn by hand, with boxes and lines, or a mix. Small gaps are closed for you; if the colour spreads to the page edge the area wasn’t closed, so undo, close the gap, and try again. Tap a filled area again with a new colour to recolour it. Fills sit underneath your ink, and you can select and delete them.</li>
-      <li><b>Snap</b> (bottom right) makes line ends, bends and shape corners jump to the corners, ends, midpoints and centres of nearby shapes, and lines boxes up edge‑to‑edge while you move them. A pink ring or guide line shows what it snapped to. Turn it off for free placement.</li>
+      <li><b>Snap</b> (bottom right) makes line ends, bends and shape corners jump to the corners, ends, midpoints and centres of nearby shapes, and lines boxes up edge‑to‑edge while you move them. Lines and arrows also snap to perfectly horizontal, vertical, 30°, 45° and 60° when you draw them or drag an end; a pink guide shows the angle. Turn it off for free placement.</li>
       <li><b>Curves</b>: select a line or arrow and drag the small + dot in its middle to bend it. Each bend is a blue handle you can keep dragging; more + dots appear on every segment for S‑curves. Double‑tap a blue handle to remove it, or tap Straighten.</li>
       <li><b>Text</b>: pick Text and tap the page. Type, or write in the box with the Pencil and the iPad turns it into typed text (Scribble). While editing, the bar above the box sets font, size, <b>B</b>, <i>I</i>, <u>U</u>, colour and alignment: select a word first to change just that word, or change nothing and keep typing in the new style. Double‑tap a text box later to edit it; tap Done or tap the page to finish.</li>
       <li><b>Photo</b> and <b>Link</b> insert in the middle of the view. Select a link and tap Open to visit it.</li>
