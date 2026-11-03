@@ -1,6 +1,6 @@
 /* Offline cache so the app opens with no signal. App files are network-first so
    updates show up on the next load. Bump VERSION on each release. */
-const VERSION = 'notebook-v11';
+const VERSION = 'notebook-v12';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'render.js', 'export.js',
   'jspdf.umd.min.js', 'perfect-freehand.mjs', 'manifest.webmanifest',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];

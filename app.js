@@ -409,30 +409,36 @@ async function bucketFill(p) {
   }
   toast('Filling…'); await new Promise(r => setTimeout(r, 30));
   const W = R.PAGE_W * FILL_SCALE, H = R.PAGE_H * FILL_SCALE;
+  const sx = Math.min(W - 1, Math.floor(p[0] * FILL_SCALE)), sy = Math.min(H - 1, Math.floor(p[1] * FILL_SCALE));
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const c = cv.getContext('2d', { willReadFrequently: true });
-  c.fillStyle = '#fff'; c.fillRect(0, 0, W, H); c.scale(FILL_SCALE, FILL_SCALE);
-  for (const el of page().elements) drawBarrier(c, el, GAP_PT);
-  const data = c.getImageData(0, 0, W, H).data;
-  const open = i => data[i * 4] >= 128;
-  const sx = Math.min(W - 1, Math.floor(p[0] * FILL_SCALE)), sy = Math.min(H - 1, Math.floor(p[1] * FILL_SCALE));
-  if (!open(sy * W + sx)) { toast('Tap inside an empty area to fill it.'); return; }
-  const region = new Uint8Array(W * H), stack = [sy * W + sx]; region[sy * W + sx] = 1;
-  let minx = sx, maxx = sx, miny = sy, maxy = sy, leaked = false;
-  while (stack.length) {
-    const i = stack.pop(), x = i % W, y = (i - x) / W;
-    if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
-    if (x === 0 || y === 0 || x === W - 1 || y === H - 1) leaked = true;
-    if (x > 0 && !region[i - 1] && open(i - 1)) { region[i - 1] = 1; stack.push(i - 1); }
-    if (x < W - 1 && !region[i + 1] && open(i + 1)) { region[i + 1] = 1; stack.push(i + 1); }
-    if (y > 0 && !region[i - W] && open(i - W)) { region[i - W] = 1; stack.push(i - W); }
-    if (y < H - 1 && !region[i + W] && open(i + W)) { region[i + W] = 1; stack.push(i + W); }
+  /* Try the lines at their true thickness first (reaches every corner exactly); only if the colour would
+     leak through a gap, thicken the lines a little, then a little more, and grow the result back by the same amount. */
+  let result = null;
+  for (const extra of [0, 1.5, GAP_PT]) {
+    c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = '#fff'; c.fillRect(0, 0, W, H); c.scale(FILL_SCALE, FILL_SCALE);
+    for (const el of page().elements) drawBarrier(c, el, extra);
+    const data = c.getImageData(0, 0, W, H).data;
+    const open = i => data[i * 4] >= 128;
+    if (!open(sy * W + sx)) { if (extra === 0) { toast('Tap inside an empty area to fill it.'); return; } continue; }
+    const region = new Uint8Array(W * H), stack = [sy * W + sx]; region[sy * W + sx] = 1;
+    let minx = sx, maxx = sx, miny = sy, maxy = sy, leaked = false;
+    while (stack.length) {
+      const i = stack.pop(), x = i % W, y = (i - x) / W;
+      if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) { leaked = true; break; }
+      if (x > 0 && !region[i - 1] && open(i - 1)) { region[i - 1] = 1; stack.push(i - 1); }
+      if (x < W - 1 && !region[i + 1] && open(i + 1)) { region[i + 1] = 1; stack.push(i + 1); }
+      if (y > 0 && !region[i - W] && open(i - W)) { region[i - W] = 1; stack.push(i - W); }
+      if (y < H - 1 && !region[i + W] && open(i + W)) { region[i + W] = 1; stack.push(i + W); }
+    }
+    if (!leaked) { result = { region, minx, maxx, miny, maxy, extra }; break; }
   }
-  if (leaked) { toast('That area isn’t closed, so the colour would spill across the page. Close the gap (Snap helps) and try again.'); return; }
-  // grow the region back so it reaches under the lines (barriers were widened by GAP_PT)
-  const r = Math.round(GAP_PT * FILL_SCALE);
-  const bx0 = Math.max(0, minx - r), by0 = Math.max(0, miny - r), bx1 = Math.min(W - 1, maxx + r), by1 = Math.min(H - 1, maxy + r);
-  let cur = region;
+  if (!result) { toast('That area isn’t closed, so the colour would spill across the page. Close the gap (Snap helps) and try again.'); return; }
+  // grow back by the thickening used, plus a hair so the fill tucks under the ink with no pale seam
+  const r = Math.round(result.extra * FILL_SCALE) + 2;
+  const bx0 = Math.max(0, result.minx - r), by0 = Math.max(0, result.miny - r), bx1 = Math.min(W - 1, result.maxx + r), by1 = Math.min(H - 1, result.maxy + r);
+  let cur = result.region;
   for (let k = 0; k < r; k++) {
     const next = new Uint8Array(cur);
     for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
@@ -455,6 +461,7 @@ async function bucketFill(p) {
   commit(opAdd([el])); requestRender();
   toast('Filled.');
 }
+
 let lastTap = null;
 function selectDown(e, p) {
   const f = selFrame();
