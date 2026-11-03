@@ -355,7 +355,7 @@ function startGesture(e) {
       break;
     case 'eraser':
       gesture = { kind: 'erase', pointerId: id, removed: [] }; eraseAt(p); break;
-    case 'rect': case 'ellipse': case 'line': case 'arrow': {
+    case 'rect': case 'ellipse': case 'line': case 'arrow': case 'triangle': case 'rtriangle': case 'diamond': case 'pentagon': case 'hexagon': case 'star': case 'rrect': {
       let p0 = p, T = null;
       if (S.snap) { T = snapTargets(new Set()); p0 = snapPoint(p, T, []); }
       gesture = { kind: 'shape', pointerId: id, start: p0, T, el: { type: 'shape', id: uid(), kind: S.tool, cx: p0[0], cy: p0[1], w: 0, h: 0, rot: 0,
@@ -393,7 +393,9 @@ function drawBarrier(c, el, extra) {
         return;
       }
       c.save(); c.translate(el.cx, el.cy); c.rotate(el.rot || 0); c.lineWidth = el.width + extra * 2; c.beginPath();
-      if (el.kind === 'rect') c.rect(-el.w / 2, -el.h / 2, el.w, el.h); else c.ellipse(0, 0, Math.max(0.1, el.w / 2), Math.max(0.1, el.h / 2), 0, 0, Math.PI * 2);
+      if (el.kind === 'rect') c.rect(-el.w / 2, -el.h / 2, el.w, el.h);
+      else if (R.isPolyKind(el.kind)) R.tracePoly(c, R.polyPoints(el));
+      else c.ellipse(0, 0, Math.max(0.1, el.w / 2), Math.max(0.1, el.h / 2), 0, 0, Math.PI * 2);
       c.stroke(); c.restore();
       return;
   }
@@ -530,7 +532,7 @@ function moveGesture(ev) {
         let w = Math.abs(dx), h = Math.abs(dy);
         if (S.snap && w > 6 && h > 6 && !(g.guides || []).some(x => x.k === 'pt') && Math.abs(w - h) < Math.max(8 / S.view.s, 0.12 * Math.max(w, h))) {
           w = h = Math.max(w, h);   // lock to a perfect square / circle
-          (g.guides || (g.guides = [])).push({ k: 'label', p: [sx + Math.sign(dx || 1) * w, sy + Math.sign(dy || 1) * h], text: el.kind === 'rect' ? 'square' : 'circle' });
+          (g.guides || (g.guides = [])).push({ k: 'label', p: [sx + Math.sign(dx || 1) * w, sy + Math.sign(dy || 1) * h], text: el.kind === 'rect' || el.kind === 'rrect' ? 'square' : el.kind === 'ellipse' ? 'circle' : 'regular' });
         }
         el.cx = sx + Math.sign(dx || 1) * w / 2; el.cy = sy + Math.sign(dy || 1) * h / 2; el.w = w; el.h = h;
       }
@@ -618,6 +620,7 @@ function eraseAt(p) {
 const SNAP_PX = 10;
 function featurePts(el) {
   const f = { pts: [], xs: [], ys: [] };
+  if (el.type === 'fill') return f;   // paint is not something to snap to
   if (el.type === 'stroke') {
     if (el.tool !== 'highlighter' && el.points.length) { const a = el.points[0], b = el.points[el.points.length - 1]; f.pts.push([a[0], a[1]], [b[0], b[1]]); }
     return f;
@@ -630,8 +633,15 @@ function featurePts(el) {
     return f;
   }
   const cs = R.corners(el);
-  cs.forEach(c => f.pts.push(c)); f.pts.push([el.cx, el.cy]);
-  for (let i = 0; i < 4; i++) { const a = cs[i], b = cs[(i + 1) % 4]; f.pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); }
+  if (el.type === 'shape' && R.isPolyKind(el.kind)) {
+    const vs = R.polyPoints(el).map(q => R.fromLocal(el, q));
+    vs.forEach(v => f.pts.push(v)); f.pts.push([el.cx, el.cy]);
+    if (el.kind !== 'rrect') for (let i = 0; i < vs.length; i++) { const a = vs[i], b = vs[(i + 1) % vs.length]; f.pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); }
+  } else {
+    if (!(el.type === 'shape' && el.kind === 'ellipse')) cs.forEach(c => f.pts.push(c));
+    f.pts.push([el.cx, el.cy]);
+    for (let i = 0; i < 4; i++) { const a = cs[i], b = cs[(i + 1) % 4]; f.pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); }
+  }
   if (Math.abs(el.rot || 0) < 0.01) { f.xs.push(el.cx - el.w / 2, el.cx, el.cx + el.w / 2); f.ys.push(el.cy - el.h / 2, el.cy, el.cy + el.h / 2); }
   return f;
 }
@@ -753,9 +763,9 @@ function applyHandle(p) {
     let nw = Math.max(8, (local[0] - anchorL[0]) * sign[0]), nh = Math.max(8, (local[1] - anchorL[1]) * sign[1]);
     if (el.type === 'image') { const k = Math.max(nw / s.w, nh / s.h); nw = s.w * k; nh = s.h * k; }
     if (el.type === 'text' || el.type === 'link') nh = s.h;
-    if (S.snap && el.type === 'shape' && (el.kind === 'rect' || el.kind === 'ellipse') && Math.abs(nw - nh) < Math.max(8 / S.view.s, 0.12 * Math.max(nw, nh))) {
+    if (S.snap && el.type === 'shape' && R.isAreaKind(el.kind) && Math.abs(nw - nh) < Math.max(8 / S.view.s, 0.12 * Math.max(nw, nh))) {
       nw = nh = Math.max(nw, nh);
-      (g.guides || (g.guides = [])).push({ k: 'label', p: p, text: el.kind === 'rect' ? 'square' : 'circle' });
+      (g.guides || (g.guides = [])).push({ k: 'label', p: p, text: el.kind === 'rect' || el.kind === 'rrect' ? 'square' : el.kind === 'ellipse' ? 'circle' : 'regular' });
     }
     [el.cx, el.cy] = R.fromLocal(f, [anchorL[0] + sign[0] * nw / 2, anchorL[1] + sign[1] * nh / 2]);
     el.w = nw; el.h = nh;
@@ -773,7 +783,7 @@ function updateSelBar() {
   selBar.innerHTML = '';
   if (S.editing) { buildFormatBar(); return; }
   if (!S.sel.length) { selBar.hidden = true; return; }
-  const sel = S.sel, hasShape = sel.some(e => e.type === 'shape' && (e.kind === 'rect' || e.kind === 'ellipse'));
+  const sel = S.sel, hasShape = sel.some(e => e.type === 'shape' && R.isAreaKind(e.kind));
   const colorable = sel.some(e => e.type !== 'image' && e.type !== 'link');
   const add = (label, fn, cls) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = fn; selBar.appendChild(b); return b; };
   const sep = () => { const s = document.createElement('span'); s.className = 'sep'; selBar.appendChild(s); };
@@ -1027,6 +1037,24 @@ function setTool(t) {
   if (t !== 'select' && S.sel.length) { setSel([]); requestRender(); }
 }
 $$('.tool[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+/* "More" shapes: a small menu; the chosen shape becomes the More button's face */
+const MORE_SHAPES = { rtriangle: 'Right tri.', diamond: 'Diamond', pentagon: 'Pentagon', hexagon: 'Hexagon', star: 'Star', rrect: 'Rounded' };
+let moreShape = localStorage.getItem('moreShape') in MORE_SHAPES ? localStorage.getItem('moreShape') : 'diamond';
+const btnMore = $('#btnMoreShapes'), shapeMenu = $('#shapeMenu');
+function setMoreShape(k) {
+  moreShape = k; localStorage.setItem('moreShape', k);
+  btnMore.dataset.tool = k; btnMore.querySelector('span').textContent = MORE_SHAPES[k];
+  btnMore.querySelector('svg').innerHTML = $(`#shapeMenu button[data-kind="${k}"] svg`).innerHTML;
+}
+btnMore.onclick = () => {
+  if (S.tool === moreShape && shapeMenu.hidden) { shapeMenu.hidden = false; return; }   // second tap opens the menu
+  if (!shapeMenu.hidden) { shapeMenu.hidden = true; return; }
+  setTool(moreShape);
+};
+btnMore.addEventListener('contextmenu', e => { e.preventDefault(); shapeMenu.hidden = false; });
+$$('#shapeMenu button').forEach(b => b.onclick = () => { setMoreShape(b.dataset.kind); shapeMenu.hidden = true; setTool(moreShape); });
+document.addEventListener('pointerdown', e => { if (!shapeMenu.hidden && !shapeMenu.contains(e.target) && e.target !== btnMore && !btnMore.contains(e.target)) shapeMenu.hidden = true; });
+setMoreShape(moreShape);
 
 const colorsEl = $('#colors');
 for (const c of COLORS) { const b = document.createElement('button'); b.style.background = c; b.dataset.color = c; b.onclick = () => setColor(c); colorsEl.appendChild(b); }
@@ -1356,6 +1384,7 @@ window.addEventListener('pagehide', () => { if (S.nb) saveNow(); });
 
 /* ---------------- boot ---------------- */
 window.__nb = () => S;   // debug hook: inspect state from the console
+S.appVersion = 'notebook-v13';
 (async function boot() {
   setTool('pen'); setColor(COLORS[0]); setSize('m'); setPencilOnly(S.pencilOnly); setSnap(S.snap); setDock(localStorage.getItem('dock') || 'bottom');
   try { await DB.open(); } catch (e) { alert('This browser cannot store notebooks (private mode?). ' + e.message); }

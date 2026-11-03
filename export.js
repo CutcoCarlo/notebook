@@ -1,7 +1,7 @@
 /* export.js — PDF (vector) and PNG export of notebook pages. */
 import { PAGE_W, PAGE_H, templateMarks, strokeCommands, layoutText, corners, fromLocal, arrowHead,
          TEXT_PAD, imageReady, hostOf, renderPage, linePts, curveSegments, trimEnd, endDirection, tintedFill,
-         textLayout, drawElement } from './render.js';
+         textLayout, drawElement, isPolyKind, polyPoints } from './render.js';
 
 const rgb = hex => {
   if (!hex || hex[0] !== '#') return [0, 0, 0];
@@ -66,6 +66,8 @@ async function drawPagePDF(doc, page) {
         if (filled) doc.setFillColor(...rgb(el.fill));
         if (el.kind === 'rect') {
           doc.path(polyOps(corners(el))); filled ? doc.fillStroke() : doc.stroke();
+        } else if (isPolyKind(el.kind)) {
+          doc.path(polyOps(polyPoints(el).map(q => fromLocal(el, q)))); filled ? doc.fillStroke() : doc.stroke();
         } else if (el.kind === 'ellipse') {
           const a = el.w / 2, b = el.h / 2, k = 0.5523;
           const L = p => fromLocal(el, p);

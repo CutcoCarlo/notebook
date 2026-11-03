@@ -140,6 +140,17 @@ body.dock-left .tool, body.dock-right .tool { min-width: 52px; }
 .toggle.on .dot { background: var(--accent); }
 .toggle.on { border-color: var(--accent); }
 
+/* ---- more-shapes menu ---- */
+.shapemenu { position: absolute; z-index: 40; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  padding: 6px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; left: 50%; bottom: 120px; transform: translateX(-50%); }
+body.dock-top .shapemenu { bottom: auto; top: 170px; }
+body.dock-left .shapemenu { left: 120px; bottom: auto; top: 50%; transform: translateY(-50%); }
+body.dock-right .shapemenu { left: auto; right: 120px; bottom: auto; top: 50%; transform: translateY(-50%); }
+.shapemenu button { border: 0; background: none; border-radius: 8px; padding: 6px 8px; min-width: 70px; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; color: var(--ink); }
+.shapemenu button:active { background: #ece6d9; }
+.shapemenu svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+.shapemenu span { font-size: 10px; color: var(--muted); }
+
 /* ---- dialogs ---- */
 dialog { border: 0; border-radius: 14px; padding: 0; max-width: min(92vw, 440px); width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.3); -webkit-user-select: text; user-select: text; }
 dialog::backdrop { background: rgba(0,0,0,.35); }

@@ -83,6 +83,10 @@
         <svg viewBox="0 0 24 24"><path d="M5 19L19 5"/></svg><span>Line</span></button>
       <button class="tool" data-tool="arrow" title="Arrow">
         <svg viewBox="0 0 24 24"><path d="M5 19L19 5"/><path d="M11 5h8v8"/></svg><span>Arrow</span></button>
+      <button class="tool" data-tool="triangle" title="Triangle">
+        <svg viewBox="0 0 24 24"><path d="M12 4l8 15H4z"/></svg><span>Triangle</span></button>
+      <button class="tool" id="btnMoreShapes" data-tool="diamond" title="More shapes: tap to use, tap again to choose another">
+        <svg viewBox="0 0 24 24"><path d="M12 3l9 9-9 9-9-9z"/></svg><span>Diamond</span></button>
       <span class="sep"></span>
       <button class="tool" data-tool="bucket" title="Paint bucket: fill an enclosed area with the current color">
         <svg viewBox="0 0 24 24"><path d="M5 11l7-7 7 7-7 7z"/><path d="M3 11h16"/><path d="M19.5 14c1 1.5 1.5 2.5 1.5 3.5a1.5 1.5 0 0 1-3 0c0-1 .5-2 1.5-3.5z"/></svg><span>Fill</span></button>
@@ -113,6 +117,14 @@
     </div>
   </footer>
   <div id="dockHint" hidden></div>
+  </div>
+  <div id="shapeMenu" class="shapemenu" hidden>
+    <button type="button" data-kind="rtriangle" title="Right triangle"><svg viewBox="0 0 24 24"><path d="M5 4v16h15z"/></svg><span>Right tri.</span></button>
+    <button type="button" data-kind="diamond" title="Diamond"><svg viewBox="0 0 24 24"><path d="M12 3l9 9-9 9-9-9z"/></svg><span>Diamond</span></button>
+    <button type="button" data-kind="pentagon" title="Pentagon"><svg viewBox="0 0 24 24"><path d="M12 3l9 6.5-3.5 10.5h-11L3 9.5z"/></svg><span>Pentagon</span></button>
+    <button type="button" data-kind="hexagon" title="Hexagon"><svg viewBox="0 0 24 24"><path d="M7 4h10l5 8-5 8H7l-5-8z"/></svg><span>Hexagon</span></button>
+    <button type="button" data-kind="star" title="Star"><svg viewBox="0 0 24 24"><path d="M12 3l2.7 6 6.3.6-4.8 4.3 1.5 6.4L12 17l-5.7 3.3 1.5-6.4L3 9.6l6.3-.6z"/></svg><span>Star</span></button>
+    <button type="button" data-kind="rrect" title="Rounded box"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="4"/></svg><span>Rounded</span></button>
   </div>
   <input type="file" id="fileImage" accept="image/*" hidden>
 </section>
@@ -183,7 +195,7 @@
       <li><b>Pencil only</b> (bottom right) means fingers never draw: one finger scrolls, two fingers pinch to zoom. Turn it off to draw with a finger.</li>
       <li><b>Eraser</b> removes whole strokes you touch.</li>
       <li><b>Select</b>: tap something to select it, or draw a loop around several things. Once selected, drag it to move, pull a corner to resize, use the top handle to rotate. The small toolbar above the selection changes color, duplicates or deletes.</li>
-      <li><b>Boxes, circles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable.</li>
+      <li><b>Boxes, circles, triangles, lines, arrows</b>: pick the tool and drag. Tap once for a default size. They stay editable. The last shape button holds more: right triangle, diamond, pentagon, hexagon, star and rounded box. Tap it to draw the shape it shows, tap it again to pick a different one.</li>
       <li><b>Fill</b> (paint bucket): pick a color, then tap inside any closed area, whether it was drawn by hand, with boxes and lines, or a mix. Small gaps are closed for you; if the colour spreads to the page edge the area wasn’t closed, so undo, close the gap, and try again. Tap a filled area again with a new colour to recolour it. Fills sit underneath your ink, and you can select and delete them.</li>
       <li><b>Snap</b> (bottom right) makes line ends, bends and shape corners jump to the corners, ends, midpoints and centres of nearby shapes, and lines boxes up edge‑to‑edge while you move them. Lines and arrows also snap to perfectly horizontal, vertical, 30°, 45° and 60° when you draw them or drag an end; a pink guide shows the angle. Turn it off for free placement.</li>
       <li><b>Curves</b>: select a line or arrow and drag the small + dot in its middle to bend it. Each bend is a blue handle you can keep dragging; more + dots appear on every segment for S‑curves. Double‑tap a blue handle to remove it, or tap Straighten.</li>

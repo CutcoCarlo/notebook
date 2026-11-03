@@ -191,6 +191,45 @@ export function maskAlpha(el, p) {
   return d.a[(py * d.w + px) * 4 + 3];
 }
 
+/* ---------- polygon shapes (triangle, diamond, hexagon, star, …) ----------
+   Vertices in the shape's local frame, inside the w x h box centred on 0,0. */
+export const POLY_KINDS = ['triangle', 'rtriangle', 'diamond', 'pentagon', 'hexagon', 'star', 'rrect'];
+export const isPolyKind = k => POLY_KINDS.includes(k);
+export const isAreaKind = k => k === 'rect' || k === 'ellipse' || isPolyKind(k);
+function regular(n, hw, hh, startDeg = -90) {
+  const pts = [];
+  for (let i = 0; i < n; i++) { const a = (startDeg + i * 360 / n) * Math.PI / 180; pts.push([Math.cos(a), Math.sin(a)]); }
+  // normalise so the polygon fills the box exactly
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+  return pts.map(([x, y]) => [((x - minx) / (maxx - minx) * 2 - 1) * hw, ((y - miny) / (maxy - miny) * 2 - 1) * hh]);
+}
+export function polyPoints(el) {
+  const hw = el.w / 2, hh = el.h / 2;
+  switch (el.kind) {
+    case 'triangle':  return [[0, -hh], [hw, hh], [-hw, hh]];
+    case 'rtriangle': return [[-hw, -hh], [hw, hh], [-hw, hh]];
+    case 'diamond':   return [[0, -hh], [hw, 0], [0, hh], [-hw, 0]];
+    case 'pentagon':  return regular(5, hw, hh);
+    case 'hexagon':   return regular(6, hw, hh, 0);
+    case 'star': {
+      const out = [], n = 5;
+      for (let i = 0; i < n * 2; i++) { const a = (-90 + i * 180 / n) * Math.PI / 180, r = i % 2 ? 0.382 : 1; out.push([Math.cos(a) * r, Math.sin(a) * r]); }
+      const xs = out.map(p => p[0]), ys = out.map(p => p[1]);
+      const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+      return out.map(([x, y]) => [((x - minx) / (maxx - minx) * 2 - 1) * hw, ((y - miny) / (maxy - miny) * 2 - 1) * hh]);
+    }
+    case 'rrect': {   // rounded box as a polygon (used for PDF, hit-testing and snapping)
+      const r = Math.min(hw, hh) * 0.35, out = [];
+      const arc = (cx, cy, a0) => { for (let i = 0; i <= 6; i++) { const a = (a0 + i * 15) * Math.PI / 180; out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } };
+      arc(hw - r, -hh + r, -90); arc(hw - r, hh - r, 0); arc(-hw + r, hh - r, 90); arc(-hw + r, -hh + r, 180);
+      return out;
+    }
+  }
+  return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+}
+export function tracePoly(ctx, pts) { ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath(); }
+
 /* ---------- lines & curves ----------
    A line/arrow is a list of points `pts` (page coords). The first and last are the ends; any points
    between are handles the curve passes through (Catmull-Rom spline). cx/cy/w/rot are kept in sync
@@ -296,6 +335,14 @@ export function drawElement(ctx, el, env = {}) {
       const hw = el.w / 2, hh = el.h / 2;
       if (el.kind === 'rect') {
         ctx.beginPath(); ctx.rect(-hw, -hh, el.w, el.h);
+        if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
+        ctx.stroke();
+      } else if (el.kind === 'rrect') {
+        ctx.beginPath(); ctx.roundRect(-hw, -hh, el.w, el.h, Math.min(hw, hh) * 0.35);
+        if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
+        ctx.stroke();
+      } else if (isPolyKind(el.kind)) {
+        ctx.beginPath(); tracePoly(ctx, polyPoints(el));
         if (el.fill && el.fill !== 'none') { ctx.fillStyle = el.fill; ctx.fill(); }
         ctx.stroke();
       } else if (el.kind === 'ellipse') {
@@ -419,6 +466,12 @@ export function hitElement(el, p, tol) {
   if (el.type === 'shape') {
     const t = tol + el.width / 2;
     const filled = el.fill && el.fill !== 'none';
+    if (isPolyKind(el.kind)) {
+      const poly = polyPoints(el);
+      if (filled && pointInPolygon([lx, ly], poly)) return true;
+      for (let i = 0; i < poly.length; i++) if (distToSegment([lx, ly], poly[i], poly[(i + 1) % poly.length]) <= t) return true;
+      return false;
+    }
     if (el.kind === 'rect') {
       const inside = Math.abs(lx) <= hw + t && Math.abs(ly) <= hh + t;
       if (!inside) return false;
